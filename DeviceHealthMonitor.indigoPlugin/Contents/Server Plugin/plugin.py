@@ -5,12 +5,13 @@
 #              and sends consolidated Pushover alerts.
 # Author:      CliveS & Claude Sonnet 4.6
 # Date:        29-04-2026
-# Version:     1.0
+# Version:     1.1
 
 import json
+import os
 import os as _os
 import sys as _sys
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import indigo  # noqa — provided by Indigo runtime
 
@@ -35,7 +36,11 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "1.0"
+PLUGIN_VERSION = "1.1"
+
+EXCLUSIONS_FILE = os.path.expanduser(
+    "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
+)
 
 
 def log(message, level="INFO"):
@@ -47,8 +52,8 @@ class Plugin(indigo.PluginBase):
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         super().__init__(pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
 
-        self.debug              = pluginPrefs.get("showDebugInfo", False)
-        self.scan_interval_sec  = int(pluginPrefs.get("scanIntervalMinutes", 10)) * 60
+        self.debug               = pluginPrefs.get("showDebugInfo", False)
+        self.scan_interval_sec   = int(pluginPrefs.get("scanIntervalMinutes", 10)) * 60
         self.zwave_battery_hours = float(pluginPrefs.get("zwave_battery_hours", 24))
         self.zwave_mains_hours   = float(pluginPrefs.get("zwave_mains_hours", 6))
         self.ecowitt_hours       = float(pluginPrefs.get("ecowitt_hours", 24))
@@ -57,11 +62,16 @@ class Plugin(indigo.PluginBase):
         self.alerted: dict[int, datetime] = {}
         self._restore_alerted()
 
+        # Exclusion list (set of lowercase device names)
+        self.excluded_names: set[str] = set()
+        self._load_exclusions()
+
         if log_startup_banner:
             log_startup_banner(pluginId, pluginDisplayName, pluginVersion, extras=[
                 ("Scan interval:", f"{pluginPrefs.get('scanIntervalMinutes', 10)} min"),
                 ("Z-Wave battery:", f"{self.zwave_battery_hours}h threshold"),
                 ("Z-Wave mains:",   f"{self.zwave_mains_hours}h threshold"),
+                ("Exclusions:",     f"{len(self.excluded_names)} device(s) excluded"),
                 ("Protocols:",      "Z2M (availability), Shelly (deviceOnline), Z-Wave (lastSuccessfulComm), Ecowitt (lastChanged)"),
             ])
         else:
@@ -72,7 +82,8 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------
 
     def startup(self):
-        log(f"{PLUGIN_NAME} v{PLUGIN_VERSION} started — monitoring {len(MONITORED_PLUGINS)} protocols")
+        log(f"{PLUGIN_NAME} v{PLUGIN_VERSION} started — monitoring {len(MONITORED_PLUGINS)} protocols, "
+            f"{len(self.excluded_names)} exclusion(s)")
 
     def shutdown(self):
         self._persist_alerted()
@@ -94,16 +105,19 @@ class Plugin(indigo.PluginBase):
     def runConcurrentThread(self):
         self.sleep(30)  # brief delay to let Indigo finish loading devices
         while True:
+            self._load_exclusions()  # reload each cycle — edits take effect without restart
             self._run_scan()
             self.sleep(self.scan_interval_sec)
 
     def _run_scan(self):
-        now          = datetime.now()
+        now           = datetime.now()
         newly_offline = []
         recovered     = []
 
         for dev in indigo.devices:
             if not dev.enabled:
+                continue
+            if dev.name.lower() in self.excluded_names:
                 continue
 
             is_offline, reason = self._check_device_health(dev)
@@ -160,7 +174,7 @@ class Plugin(indigo.PluginBase):
 
     def _check_shelly(self, dev):
         # deviceOnline may be bool or string depending on device type
-        raw = dev.states.get("deviceOnline", True)
+        raw    = dev.states.get("deviceOnline", True)
         online = raw if isinstance(raw, bool) else str(raw).lower() not in ("false", "0", "no")
         return not online, "deviceOnline=False"
 
@@ -168,7 +182,7 @@ class Plugin(indigo.PluginBase):
         last = dev.lastSuccessfulComm
         if last is None:
             return True, "lastSuccessfulComm=None (never communicated)"
-        hours = self._hours_since(last)
+        hours      = self._hours_since(last)
         is_battery = dev.batteryLevel is not None
         threshold  = self.zwave_battery_hours if is_battery else self.zwave_mains_hours
         kind       = "battery" if is_battery else "mains"
@@ -180,6 +194,47 @@ class Plugin(indigo.PluginBase):
             return True, "lastChanged=None"
         hours = self._hours_since(last)
         return hours > self.ecowitt_hours, f"lastChanged {hours:.1f}h ago (threshold {self.ecowitt_hours}h)"
+
+    # ------------------------------------------------------------------
+    # Exclusion file
+    # ------------------------------------------------------------------
+
+    def _load_exclusions(self):
+        try:
+            if not os.path.exists(EXCLUSIONS_FILE):
+                self.excluded_names = set()
+                return
+            with open(EXCLUSIONS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            names = data.get("excluded_names", [])
+            self.excluded_names = {n.lower() for n in names}
+            if self.debug:
+                log(f"Loaded {len(self.excluded_names)} exclusion(s) from file")
+        except Exception as e:
+            log(f"Failed to load exclusions file: {e}", level="ERROR")
+            self.excluded_names = set()
+
+    def _save_exclusions(self, names: list[str]):
+        try:
+            os.makedirs(os.path.dirname(EXCLUSIONS_FILE), exist_ok=True)
+            existing = []
+            if os.path.exists(EXCLUSIONS_FILE):
+                with open(EXCLUSIONS_FILE, "r", encoding="utf-8") as f:
+                    existing_data = json.load(f)
+                existing = existing_data.get("excluded_names", [])
+            merged = sorted(set(existing) | set(names))
+            data = {
+                "_comment":  "Device Health Monitor exclusion list.",
+                "_comment2": "Add device names to 'excluded_names' to permanently skip a device.",
+                "_comment3": "Use the plugin menu 'Add Offline Devices to Exclusions' to bulk-add current alerts.",
+                "excluded_names": merged,
+            }
+            with open(EXCLUSIONS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=4)
+            self._load_exclusions()
+            log(f"Exclusions file updated — {len(merged)} device(s) excluded total")
+        except Exception as e:
+            log(f"Failed to save exclusions: {e}", level="ERROR")
 
     # ------------------------------------------------------------------
     # Alerting
@@ -259,9 +314,53 @@ class Plugin(indigo.PluginBase):
             except Exception:
                 name = f"[deleted device {dev_id}]"
             duration = self._hours_since(first_seen)
-            log(f"  {name} — offline for {duration:.1f}h (since {first_seen.strftime('%H:%M %d-%b')})",
+            log(f"  {name} -- offline for {duration:.1f}h (since {first_seen.strftime('%H:%M %d-%b')})",
                 level="WARNING")
         log("---")
+        return True
+
+    def menuAddOfflineToExclusions(self, valuesDict=None, typeId=None):
+        if not self.alerted:
+            log("No offline devices to add to exclusions")
+            return True
+
+        names = []
+        for dev_id in list(self.alerted.keys()):
+            try:
+                names.append(indigo.devices[dev_id].name)
+            except Exception:
+                pass
+
+        if names:
+            self._save_exclusions(names)
+            # Clear alerted state for newly excluded devices so they don't linger
+            for dev_id in list(self.alerted.keys()):
+                try:
+                    if indigo.devices[dev_id].name in names:
+                        del self.alerted[dev_id]
+                except Exception:
+                    del self.alerted[dev_id]
+            self._persist_alerted()
+            log(f"Added {len(names)} device(s) to exclusions — they will not be monitored in future scans")
+            for n in names:
+                log(f"  Excluded: {n}")
+        return True
+
+    def menuShowExclusions(self, valuesDict=None, typeId=None):
+        if not self.excluded_names:
+            log(f"No exclusions defined. Edit {EXCLUSIONS_FILE} to add device names.")
+            return True
+        log(f"--- Excluded devices ({len(self.excluded_names)}) --- file: {EXCLUSIONS_FILE}")
+        for name in sorted(self.excluded_names):
+            log(f"  {name}")
+        log("---")
+        return True
+
+    def menuClearAlertState(self, valuesDict=None, typeId=None):
+        count = len(self.alerted)
+        self.alerted = {}
+        self._persist_alerted()
+        log(f"Alert state cleared ({count} device(s) reset). Next scan starts fresh.")
         return True
 
     def showPluginInfo(self, valuesDict=None, typeId=None):
@@ -271,8 +370,11 @@ class Plugin(indigo.PluginBase):
                 ("Z-Wave battery:", f"{self.zwave_battery_hours}h threshold"),
                 ("Z-Wave mains:",   f"{self.zwave_mains_hours}h threshold"),
                 ("Outstanding alerts:", str(len(self.alerted))),
+                ("Exclusions:",    f"{len(self.excluded_names)} device(s)"),
+                ("Exclusions file:", EXCLUSIONS_FILE),
                 ("Protocols:",     "Z2M, ShellyDirect, ShellyGen1, Z-Wave, Ecowitt"),
             ])
         else:
             indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion} | "
-                              f"{len(self.alerted)} outstanding alert(s)")
+                              f"{len(self.alerted)} outstanding alert(s) | "
+                              f"{len(self.excluded_names)} excluded")

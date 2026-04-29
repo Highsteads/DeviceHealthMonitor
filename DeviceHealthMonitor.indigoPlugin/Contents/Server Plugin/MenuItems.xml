@@ -8,6 +8,19 @@
         <Name>Show Offline/Stale Devices</Name>
         <CallbackMethod>menuShowStaleDevices</CallbackMethod>
     </MenuItem>
+    <MenuItem id="sep2" isSeparator="true"/>
+    <MenuItem id="menuAddOfflineToExclusions">
+        <Name>Add All Offline Devices to Exclusions</Name>
+        <CallbackMethod>menuAddOfflineToExclusions</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="menuShowExclusions">
+        <Name>Show Exclusions</Name>
+        <CallbackMethod>menuShowExclusions</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="menuClearAlertState">
+        <Name>Clear Alert State (Reset All)</Name>
+        <CallbackMethod>menuClearAlertState</CallbackMethod>
+    </MenuItem>
     <MenuItem id="sep1" isSeparator="true"/>
     <MenuItem id="showPluginInfo">
         <Name>Show Plugin Info</Name>
