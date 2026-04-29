@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<PluginConfig>
+    <Field id="scanIntervalMinutes" type="menu" defaultValue="10">
+        <Label>Scan interval</Label>
+        <List>
+            <Option value="5">Every 5 minutes</Option>
+            <Option value="10">Every 10 minutes</Option>
+            <Option value="15">Every 15 minutes</Option>
+            <Option value="30">Every 30 minutes</Option>
+        </List>
+    </Field>
+
+    <Field id="sep_zwave" type="separator"/>
+    <Field id="label_zwave" type="label">
+        <Label>Z-Wave thresholds</Label>
+    </Field>
+
+    <Field id="zwave_battery_hours" type="textfield" defaultValue="24">
+        <Label>Battery device threshold (hours)</Label>
+        <Description>Alert if a battery-powered Z-Wave device has not communicated for this many hours.</Description>
+    </Field>
+
+    <Field id="zwave_mains_hours" type="textfield" defaultValue="6">
+        <Label>Mains device threshold (hours)</Label>
+        <Description>Alert if a mains-powered Z-Wave device has not communicated for this many hours.</Description>
+    </Field>
+
+    <Field id="sep_ecowitt" type="separator"/>
+    <Field id="label_ecowitt" type="label">
+        <Label>Ecowitt threshold</Label>
+    </Field>
+
+    <Field id="ecowitt_hours" type="textfield" defaultValue="24">
+        <Label>Ecowitt state-change threshold (hours)</Label>
+        <Description>Alert if an Ecowitt device has had no state change for this many hours (uses lastChanged as a proxy).</Description>
+    </Field>
+
+    <Field id="sep_debug" type="separator"/>
+
+    <Field id="showDebugInfo" type="checkbox" defaultValue="false">
+        <Label>Enable debug logging</Label>
+    </Field>
+</PluginConfig>
