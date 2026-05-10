@@ -42,7 +42,7 @@ Open Plugin > Device Health Monitor > Configure:
 
 ## Credentials
 
-This plugin does not use any API credentials. No `secrets.py` configuration needed.
+This plugin does not use any API credentials. No `IndigoSecrets.py` configuration needed.
 
 ## Requirements
 
