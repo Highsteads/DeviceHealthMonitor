@@ -40,9 +40,16 @@ Open Plugin > Device Health Monitor > Configure:
 - **Ecowitt threshold** — hours since last state change before alerting (default 24)
 - **Debug logging** — verbose scan output
 
-## Credentials
+## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
-This plugin does not use any API credentials. No `IndigoSecrets.py` configuration needed.
+**Not applicable to this plugin** — it reads no external APIs and needs no
+credentials. The `IndigoSecrets_example.py` file may be shipped in the bundle
+for ecosystem consistency, but there is nothing to fill in for this plugin.
+
+Other CliveS Indigo plugins read sensitive values from a shared master file
+at `/Library/Application Support/Perceptive Automation/IndigoSecrets.py`.
+See e.g. the Ecowitt or EcoFlow Cloud plugin READMEs for the full
+credentials documentation.
 
 ## Requirements
 
