@@ -52,7 +52,7 @@ See e.g. the Ecowitt or EcoFlow Cloud plugin READMEs for the full
 credentials documentation.
 ## Requirements
 
-- Indigo 2025.1 or later
+- Indigo 2022.1 or later (Python 3.10+)
 - Pushover plugin (io.thechad.indigoplugin.pushover) — for alerts
 - One or more of: Zigbee2MQTTBridge, ShellyDirect, ShellyGen1, Z-Wave devices, Ecowitt plugin
 
