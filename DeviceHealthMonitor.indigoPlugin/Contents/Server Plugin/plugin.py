@@ -66,16 +66,7 @@ class Plugin(indigo.PluginBase):
         self.excluded_names: set[str] = set()
         self._load_exclusions()
 
-        if log_startup_banner:
-            log_startup_banner(pluginId, pluginDisplayName, pluginVersion, extras=[
-                ("Scan interval:", f"{pluginPrefs.get('scanIntervalMinutes', 10)} min"),
-                ("Z-Wave battery:", f"{self.zwave_battery_hours}h threshold"),
-                ("Z-Wave mains:",   f"{self.zwave_mains_hours}h threshold"),
-                ("Exclusions:",     f"{len(self.excluded_names)} device(s) excluded"),
-                ("Protocols:",      "Z2M (availability), Shelly (deviceOnline), Z-Wave (lastSuccessfulComm), Ecowitt (lastChanged)"),
-            ])
-        else:
-            indigo.server.log(f"{pluginDisplayName} v{pluginVersion} starting")
+        # Startup banner moved to showPluginInfo on demand (revised 25-May-2026 per Jay).
 
     # ------------------------------------------------------------------
     # Lifecycle

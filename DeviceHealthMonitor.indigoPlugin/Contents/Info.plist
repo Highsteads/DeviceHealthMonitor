@@ -2,30 +2,30 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-    <key>CFBundleIdentifier</key>
-    <string>com.clives.indigoplugin.device-health-monitor</string>
-    <key>CFBundleDisplayName</key>
-    <string>Device Health Monitor</string>
-    <key>CFBundleName</key>
-    <string>Device Health Monitor</string>
-    <key>CFBundleVersion</key>
-    <string>1.0</string>
-    <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
-    <key>PluginVersion</key>
-    <string>1.0</string>
-    <key>ServerApiVersion</key>
-    <string>3.0</string>
-    <key>IwsApiVersion</key>
-    <string>1.0.0</string>
-    <key>CFBundleURLTypes</key>
-    <array/>
-    <key>GithubInfo</key>
-    <dict>
-        <key>owner</key>
-        <string>Highsteads</string>
-        <key>repo</key>
-        <string>DeviceHealthMonitor</string>
-    </dict>
+	<key>CFBundleDisplayName</key>
+	<string>Device Health Monitor</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.clives.indigoplugin.device-health-monitor</string>
+	<key>CFBundleName</key>
+	<string>Device Health Monitor</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleURLTypes</key>
+	<array/>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+	<key>GithubInfo</key>
+	<dict>
+		<key>owner</key>
+		<string>Highsteads</string>
+		<key>repo</key>
+		<string>DeviceHealthMonitor</string>
+	</dict>
+	<key>IwsApiVersion</key>
+	<string>1.0.0</string>
+	<key>PluginVersion</key>
+	<string>1.0</string>
+	<key>ServerApiVersion</key>
+	<string>3.0</string>
 </dict>
 </plist>
