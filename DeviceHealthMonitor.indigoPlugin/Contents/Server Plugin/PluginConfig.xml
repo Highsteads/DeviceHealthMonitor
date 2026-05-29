@@ -35,6 +35,38 @@
         <Description>Alert if an Ecowitt device has had no state change for this many hours (uses lastChanged as a proxy).</Description>
     </Field>
 
+    <Field id="sep_z2m" type="separator"/>
+    <Field id="label_z2m" type="label">
+        <Label>Zigbee2MQTT threshold</Label>
+    </Field>
+
+    <Field id="z2m_stale_hours" type="textfield" defaultValue="12">
+        <Label>Z2M device stale threshold (hours)</Label>
+        <Description>Device-level alert if a Z2M device has not communicated for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Description>
+    </Field>
+
+    <Field id="sep_watchdog" type="separator"/>
+    <Field id="label_watchdog" type="label">
+        <Label>Plugin Watchdog — restart crashed or wedged plugins</Label>
+    </Field>
+    <Field id="label_watchdog2" type="label">
+        <Label>Auto-discovers any plugin that owns comms devices and restarts it if it crashes (enabled but not running) or wedges (newest device comm older than its threshold). A denylist keeps native/virtual/derived/bridge plugins out; tuned thresholds apply where known. Policy is editable in watchdog_plugins.json (written on first run). Claude Bridge is always excluded.</Label>
+    </Field>
+
+    <Field id="watchdogEnabled" type="checkbox" defaultValue="true">
+        <Label>Enable plugin watchdog</Label>
+    </Field>
+
+    <Field id="watchdogDryRun" type="checkbox" defaultValue="true">
+        <Label>Dry-run (log/alert only, no real restarts)</Label>
+        <Description>Leave ticked until you have watched a few cycles and confirmed the detections look right, then untick to allow real restarts.</Description>
+    </Field>
+
+    <Field id="watchdogDefaultStaleMin" type="textfield" defaultValue="60">
+        <Label>Auto-discovered default stale threshold (minutes)</Label>
+        <Description>Wedge threshold for auto-discovered plugins that have no tuned override. Generous by default so a newly-seen plugin is never nuisance-restarted; tune individual plugins in watchdog_plugins.json.</Description>
+    </Field>
+
     <Field id="sep_debug" type="separator"/>
 
     <Field id="showDebugInfo" type="checkbox" defaultValue="false">

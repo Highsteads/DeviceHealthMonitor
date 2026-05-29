@@ -1,18 +1,18 @@
 # Device Health Monitor
 
-An Indigo home automation plugin that continuously monitors all physical devices for offline or stale status, and sends consolidated Pushover alerts.
+An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
 ## What It Monitors
 
 | Protocol | Source Plugin | Health Check |
 |---|---|---|
-| Zigbee (via Z2M) | Zigbee2MQTTBridge | `availability` state ("online"/"offline") |
+| Zigbee (via Z2M) | Zigbee2MQTTBridge | `lastSuccessfulComm` freshness (availability can sit stale at "online") |
 | Shelly Gen2/3/4 | ShellyDirect | `deviceOnline` state (True/False) |
 | Shelly Gen1 | ShellyGen1 | `deviceOnline` state (True/False) |
 | Z-Wave | Indigo native | `lastSuccessfulComm` timestamp vs threshold |
 | Ecowitt | Ecowitt plugin | `lastChanged` timestamp vs threshold (proxy) |
 
-Everything else (HomeKit bridges, virtual devices, timers, SigenEnergyManager, EcoFlow, RAMSES heating, etc.) is silently ignored.
+Everything else is ignored by the *device-level* scan above (HomeKit bridges, virtual devices, timers, etc.). The **plugin watchdog** (below) is a separate layer that does watch comms plugins such as SigenEnergyManager, EcoFlow and RAMSES — at the plugin level rather than per device.
 
 ## Features
 
@@ -23,6 +23,23 @@ Everything else (HomeKit bridges, virtual devices, timers, SigenEnergyManager, E
 - Consolidated Pushover notification (all new offline devices in one message)
 - Alert state persists across plugin restarts
 - "Scan Now" and "Show Offline Devices" menu items
+
+## Plugin Watchdog (v2.0)
+
+As well as alerting on individual offline devices, the plugin auto-discovers every plugin that owns communicating devices and restarts any that have failed:
+
+- **Crashed** — the plugin is enabled but not running
+- **Wedged** — the plugin is running but its newest device has not communicated within that plugin's threshold (the failure mode where an MQTT bridge keeps a dead socket and goes silent)
+
+Safety:
+
+- **Denylist** — native Z-Wave, virtual/derived/timer/bridge/notification plugins are never restarted. Claude Bridge and this plugin are excluded in code and cannot be re-included.
+- **Tuned thresholds** where a plugin's cadence is known, a generous default elsewhere, so a newly-discovered plugin is never nuisance-restarted
+- **Per-plugin cooldown and daily cap**, with a "needs manual attention" alert if a plugin keeps failing past its cap
+- **Dry-run by default** — logs and Pushovers what it *would* restart without acting, until you switch it to live
+- **Pushover on every action**
+
+Tune the policy live (no restart needed) in `~/Documents/Indigo/DeviceHealthMonitor/watchdog_plugins.json`. Menu items: Run Watchdog Check Now, Show Watchdog Status, Toggle Watchdog Dry-Run, Reset Watchdog Restart Counters.
 
 ## Installation
 
@@ -58,4 +75,4 @@ credentials documentation.
 
 ## Author
 
-CliveS & Claude Sonnet 4.6
+CliveS & Claude Opus 4.8

@@ -21,6 +21,23 @@
         <Name>Clear Alert State (Reset All)</Name>
         <CallbackMethod>menuClearAlertState</CallbackMethod>
     </MenuItem>
+    <MenuItem id="sep_watchdog" isSeparator="true"/>
+    <MenuItem id="menuRunWatchdogNow">
+        <Name>Run Watchdog Check Now</Name>
+        <CallbackMethod>menuRunWatchdogNow</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="menuShowWatchdogStatus">
+        <Name>Show Watchdog Status</Name>
+        <CallbackMethod>menuShowWatchdogStatus</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="menuToggleDryRun">
+        <Name>Toggle Watchdog Dry-Run Mode</Name>
+        <CallbackMethod>menuToggleDryRun</CallbackMethod>
+    </MenuItem>
+    <MenuItem id="menuResetRestartCounters">
+        <Name>Reset Watchdog Restart Counters</Name>
+        <CallbackMethod>menuResetRestartCounters</CallbackMethod>
+    </MenuItem>
     <MenuItem id="sep1" isSeparator="true"/>
     <MenuItem id="showPluginInfo">
         <Name>Show Plugin Info</Name>

@@ -1,11 +1,29 @@
 #! /usr/bin/env python
 # -*- coding: utf-8 -*-
 # Filename:    plugin.py
-# Description: Device Health Monitor — scans all physical devices for offline/stale status
-#              and sends consolidated Pushover alerts.
-# Author:      CliveS & Claude Sonnet 4.6
-# Date:        29-04-2026
-# Version:     1.1
+# Description: Device Health Monitor — scans all physical devices for offline/stale
+#              status and sends consolidated Pushover alerts, AND auto-discovers
+#              comms plugins, restarting any that crash or wedge.
+# Author:      CliveS & Claude Opus 4.8
+# Date:        29-05-2026
+# Version:     2.0
+#
+# v2.0 (29-05-2026): Added the Plugin Watchdog layer. The device-level scan
+# (unchanged) alerts on individual offline/stale devices; the new watchdog works
+# at the PLUGIN level and RESTARTS a plugin that is either crashed (enabled but
+# not running) or wedged (its newest device comm is older than a threshold — the
+# failure mode that left "Jane Lamp" dead on 29-05-2026 when z2mbridge kept a dead
+# MQTT socket after a network blip). The watchdog AUTO-DISCOVERS any plugin that
+# owns comms devices; a code denylist keeps native/virtual/derived/bridge plugins
+# out, tuned thresholds are applied where the cadence is known and a generous
+# default elsewhere. Guards: per-plugin cooldown + daily cap, post-restart grace,
+# dry-run mode (default ON), Pushover on every action, ClaudeBridge hard-excluded
+# in code (restarting it would drop the MCP channel). The z2m device-level check
+# now uses lastSuccessfulComm freshness rather than the availability state, which
+# can sit stale at "online" through a bridge wedge. log() upgraded to ms precision.
+#
+# v1.1 (29-04-2026): Device-level offline/stale scan with Pushover alerts and a
+# live-editable exclusions file.
 
 import json
 import os
@@ -22,7 +40,9 @@ except ImportError:
     log_startup_banner = None
 
 # ---------------------------------------------------------------------------
-# Which plugins we know how to health-check, and which method to use
+# Device-level health checks: which plugins we know how to check, and how.
+# (This is the per-DEVICE offline scan — distinct from the plugin watchdog,
+# which auto-discovers and restarts whole plugins.)
 # ---------------------------------------------------------------------------
 MONITORED_PLUGINS = {
     "com.clives.indigoplugin.z2mbridge":               "z2m",
@@ -36,15 +56,83 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "1.1"
+PLUGIN_VERSION = "2.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
 )
 
+# ---------------------------------------------------------------------------
+# Plugin Watchdog — auto-discover and restart crashed or wedged comms plugins.
+# ---------------------------------------------------------------------------
+# Restarting the MCP bridge would sever the very channel Claude uses (and has a
+# known reflector dead-zone on self-restart), so it is excluded in code and cannot
+# be re-included. This plugin never restarts itself.
+CLAUDEBRIDGE_ID = "com.clives.indigoplugin.claudebridge"
+
+# Don't re-judge a plugin for this many minutes after WE restart it (let it come
+# back up and re-establish before assessing running state / staleness again).
+POST_RESTART_GRACE_MIN = 5
+
+# The watchdog AUTO-DISCOVERS plugins to watch: any plugin that owns at least one
+# enabled, configured device maintaining lastSuccessfulComm is a candidate, unless
+# excluded. Crashed-detection (enabled but not running) applies to every candidate;
+# staleness-detection uses a tuned threshold if we have one, else a generous
+# discovered default so a newly-seen plugin is never nuisance-restarted.
+
+# Tuned per-plugin thresholds (applied to discovered plugins whose cadence we know).
+#   stale_minutes / cooldown_minutes / max_per_day / enabled
+WATCHDOG_OVERRIDES = {
+    "com.clives.indigoplugin.z2mbridge":                {"stale_minutes": 5,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
+    "com.clives.indigoplugin.tasmotabridge":            {"stale_minutes": 8,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
+    "com.clives.indigoplugin.mqttexplorerbridge":       {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    "com.clives.indigoplugin.esphomebridge":            {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    "com.clives.indigoplugin.sigenergy-energy-manager": {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    # EcoFlow pushes from the cloud in bursts and goes quiet when idle (~4.5h between
+    # updates in live testing) — lenient wedged threshold; crashed-detection still immediate.
+    "com.clives.indigoplugin.ecoflowcloud":             {"stale_minutes": 720, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "com.clives.indigoplugin.ecowitt":                  {"stale_minutes": 20,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    # RAMSES TRVs report infrequently (esp. summer, heating off) — lenient threshold.
+    "uk.co.clives.ramses.esp":                          {"stale_minutes": 180, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "com.clives.indigoplugin.shellydirect":             {"stale_minutes": 15,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    # ShellyGen1 is known HTTP-flaky — long threshold + low cap so we don't thrash it.
+    "com.clives.indigoplugin.shellyg1":                 {"stale_minutes": 30,  "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+    # Humax Aura (TV) only comms when in use — staleness is not a wedge signal, so this is
+    # effectively crashed-only (24h threshold) to avoid nuisance restarts when the TV is off.
+    "com.clives.indigoplugin.humaxaura":                {"stale_minutes": 1440, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+}
+
+# Never auto-restart these. ClaudeBridge (MCP channel) and this plugin are added in
+# code and cannot be re-included. The rest are native / virtual / derived / bridge /
+# notification plugins where a restart is wrong, meaningless, or too disruptive to
+# automate. Un-exclude one via "include" in the config file if you do want it watched.
+WATCHDOG_DENYLIST = {
+    "com.perceptiveautomation.indigoplugin.zwave",             # native — restart re-inits the whole Z-Wave mesh
+    "com.perceptiveautomation.indigoplugin.devicecollection",  # virtual devices
+    "com.perceptiveautomation.indigoplugin.timersandpesters",  # timers / pesters
+    "com.GlennNZ.indigoplugin.HomeKitLink-Siri",               # HomeKit bridges
+    "com.indigodomo.email",                                    # SMTP, no polling
+    "com.howartp.clockdisplay",                                # clock display
+    "com.howartp.lockmanager",                                 # derived lock logic
+    "com.drjason.temp-adapter",                                # derived temperature
+    "com.clives.indigoplugin.deviceactivitymonitor",           # derived activity / presence
+    "com.clives.indigoplugin.appliancemonitor",                # derived appliance state
+    "com.clives.universal-zwave-sensor",                       # derived from Z-Wave
+    "io.thechad.indigoplugin.pushover",                        # notifications
+}
+
+# Policy for auto-discovered plugins with no tuned override (generous so a newly-seen
+# plugin is never nuisance-restarted before you tune it). stale_minutes is overridden
+# by the "Auto-discovered default stale threshold" preference.
+DISCOVERED_DEFAULT = {"stale_minutes": 60, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}
+
+WATCHDOG_CONFIG_FILE = os.path.expanduser(
+    "~/Documents/Indigo/DeviceHealthMonitor/watchdog_plugins.json"
+)
+
 
 def log(message, level="INFO"):
-    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", level=level)
+    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=level)
 
 
 class Plugin(indigo.PluginBase):
@@ -57,14 +145,28 @@ class Plugin(indigo.PluginBase):
         self.zwave_battery_hours = float(pluginPrefs.get("zwave_battery_hours", 24))
         self.zwave_mains_hours   = float(pluginPrefs.get("zwave_mains_hours", 6))
         self.ecowitt_hours       = float(pluginPrefs.get("ecowitt_hours", 24))
+        self.z2m_stale_hours     = float(pluginPrefs.get("z2m_stale_hours", 12))
 
         # device_id -> datetime first alerted
         self.alerted: dict[int, datetime] = {}
         self._restore_alerted()
 
-        # Exclusion list (set of lowercase device names)
+        # Exclusion list (set of lowercase device names) for the device-level scan
         self.excluded_names: set[str] = set()
         self._load_exclusions()
+
+        # Plugin watchdog (auto-discovering)
+        self.watchdog_enabled          = bool(pluginPrefs.get("watchdogEnabled", True))
+        self.watchdog_dry_run          = bool(pluginPrefs.get("watchdogDryRun", True))
+        self.watchdog_discovered_stale = float(pluginPrefs.get("watchdogDefaultStaleMin", 60))
+        # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool}
+        self.restart_state: dict = {}
+        self._restore_watchdog_state()
+        # Resolved config (seeded from code, overlaid by the editable JSON file)
+        self.watchdog_overrides: dict          = {}
+        self.watchdog_exclude: set             = set()
+        self.watchdog_discovered_default: dict = {}
+        self._load_watchdog_config()
 
         # Startup banner moved to showPluginInfo on demand (revised 25-May-2026 per Jay).
 
@@ -73,31 +175,44 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------
 
     def startup(self):
-        log(f"{PLUGIN_NAME} v{PLUGIN_VERSION} started — monitoring {len(MONITORED_PLUGINS)} protocols, "
-            f"{len(self.excluded_names)} exclusion(s)")
+        log(f"{PLUGIN_NAME} v{PLUGIN_VERSION} started — {len(MONITORED_PLUGINS)} device protocols, "
+            f"watchdog {'ON' if self.watchdog_enabled else 'OFF'} "
+            f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover, "
+            f"{len(self.watchdog_exclude)} excluded), {len(self.excluded_names)} device exclusion(s)")
 
     def shutdown(self):
         self._persist_alerted()
+        self._persist_watchdog_state()
         log(f"{PLUGIN_NAME} shutting down")
 
     def closedPrefsConfigUi(self, valuesDict, userCancelled):
         if not userCancelled:
-            self.debug               = valuesDict.get("showDebugInfo", False)
-            self.scan_interval_sec   = int(valuesDict.get("scanIntervalMinutes", 10)) * 60
-            self.zwave_battery_hours = float(valuesDict.get("zwave_battery_hours", 24))
-            self.zwave_mains_hours   = float(valuesDict.get("zwave_mains_hours", 6))
-            self.ecowitt_hours       = float(valuesDict.get("ecowitt_hours", 24))
+            self.debug                     = valuesDict.get("showDebugInfo", False)
+            self.scan_interval_sec         = int(valuesDict.get("scanIntervalMinutes", 10)) * 60
+            self.zwave_battery_hours       = float(valuesDict.get("zwave_battery_hours", 24))
+            self.zwave_mains_hours         = float(valuesDict.get("zwave_mains_hours", 6))
+            self.ecowitt_hours             = float(valuesDict.get("ecowitt_hours", 24))
+            self.z2m_stale_hours           = float(valuesDict.get("z2m_stale_hours", 12))
+            self.watchdog_enabled          = bool(valuesDict.get("watchdogEnabled", True))
+            self.watchdog_dry_run          = bool(valuesDict.get("watchdogDryRun", True))
+            self.watchdog_discovered_stale = float(valuesDict.get("watchdogDefaultStaleMin", 60))
+            self._load_watchdog_config()
             log("Preferences updated")
 
     # ------------------------------------------------------------------
-    # Main scan loop
+    # Main scan + watchdog loop
     # ------------------------------------------------------------------
 
     def runConcurrentThread(self):
         self.sleep(30)  # brief delay to let Indigo finish loading devices
         while True:
-            self._load_exclusions()  # reload each cycle — edits take effect without restart
-            self._run_scan()
+            try:
+                self._load_exclusions()       # reload each cycle — edits take effect without restart
+                self._run_scan()
+                self._load_watchdog_config()  # reload each cycle too
+                self._run_plugin_watchdog()
+            except Exception as e:
+                log(f"Cycle error: {e}", level="ERROR")
             self.sleep(self.scan_interval_sec)
 
     def _run_scan(self):
@@ -136,7 +251,7 @@ class Plugin(indigo.PluginBase):
                 f"{len(self.alerted)} total outstanding")
 
     # ------------------------------------------------------------------
-    # Per-protocol health checks
+    # Per-protocol device health checks
     # ------------------------------------------------------------------
 
     def _check_device_health(self, dev):
@@ -160,8 +275,19 @@ class Plugin(indigo.PluginBase):
         return None, None
 
     def _check_z2m(self, dev):
+        # Trust comm freshness over the availability state: availability can sit
+        # stale at "online" after a bridge MQTT wedge (the Jane Lamp case,
+        # 29-05-2026), so check lastSuccessfulComm first, then fall back to the
+        # availability flag for devices z2m has actively marked offline.
+        last = dev.lastSuccessfulComm
+        if last is not None:
+            hours = self._hours_since(last)
+            if hours > self.z2m_stale_hours:
+                return True, f"no comm for {hours:.1f}h (threshold {self.z2m_stale_hours}h)"
         avail = dev.states.get("availability", "online")
-        return avail == "offline", "availability=offline"
+        if avail == "offline":
+            return True, "availability=offline"
+        return False, ""
 
     def _check_shelly(self, dev):
         # deviceOnline may be bool or string depending on device type
@@ -187,7 +313,7 @@ class Plugin(indigo.PluginBase):
         return hours > self.ecowitt_hours, f"lastChanged {hours:.1f}h ago (threshold {self.ecowitt_hours}h)"
 
     # ------------------------------------------------------------------
-    # Exclusion file
+    # Exclusion file (device-level scan)
     # ------------------------------------------------------------------
 
     def _load_exclusions(self):
@@ -228,32 +354,271 @@ class Plugin(indigo.PluginBase):
             log(f"Failed to save exclusions: {e}", level="ERROR")
 
     # ------------------------------------------------------------------
-    # Alerting
+    # Pushover
     # ------------------------------------------------------------------
 
-    def _alert_pushover(self, offline_list):
+    def _send_pushover(self, title, body, priority="0", sound="vibrate"):
+        """Send a single Pushover message. Returns True on success."""
         try:
             plugin = indigo.server.getPlugin(PUSHOVER_PLUGIN_ID)
             if not plugin.isEnabled():
                 raise RuntimeError("Pushover plugin not enabled")
-
-            body  = "\n".join(f"- {name} ({reason})" for name, reason in offline_list)
-            title = f"Device Health: {len(offline_list)} offline"
-            props = {
+            plugin.executeAction("send", props={
                 "msgTitle":    title,
                 "msgBody":     body,
-                "msgPriority": "0",
-                "msgSound":    "vibrate",
-            }
-            plugin.executeAction("send", props=props)
-            log(f"Pushover alert sent: {len(offline_list)} device(s) offline")
+                "msgPriority": str(priority),
+                "msgSound":    sound,
+            })
+            return True
         except Exception as e:
-            log(f"Pushover failed ({e}) — logging offline devices to event log", level="WARNING")
+            log(f"Pushover failed ({e}) — {title}: {body}", level="WARNING")
+            return False
+
+    def _alert_pushover(self, offline_list):
+        body  = "\n".join(f"- {name} ({reason})" for name, reason in offline_list)
+        title = f"Device Health: {len(offline_list)} offline"
+        if self._send_pushover(title, body, priority="0"):
+            log(f"Pushover alert sent: {len(offline_list)} device(s) offline")
+        else:
             for name, reason in offline_list:
                 log(f"[OFFLINE] {name}: {reason}", level="WARNING")
 
+    # ==================================================================
+    # Plugin Watchdog (auto-discovering)
+    # ==================================================================
+
+    def _load_watchdog_config(self):
+        """Resolve the watchdog policy: code defaults overlaid by an editable JSON
+        file (created on first run). Holds tuned per-plugin overrides, an exclude
+        list, optional includes (to un-exclude a denylisted plugin) and the default
+        policy for auto-discovered plugins. ClaudeBridge and this plugin are always
+        excluded in code and cannot be re-included."""
+        overrides = {pid: dict(pol) for pid, pol in WATCHDOG_OVERRIDES.items()}
+        exclude   = set(WATCHDOG_DENYLIST)
+        default   = dict(DISCOVERED_DEFAULT)
+        default["stale_minutes"] = self.watchdog_discovered_stale
+        try:
+            if os.path.exists(WATCHDOG_CONFIG_FILE):
+                with open(WATCHDOG_CONFIG_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                for pid, pol in (data.get("overrides") or {}).items():
+                    if isinstance(pol, dict):
+                        overrides.setdefault(pid, {})
+                        overrides[pid].update(pol)
+                for pid in (data.get("exclude") or []):
+                    exclude.add(pid)
+                for pid in (data.get("include") or []):
+                    exclude.discard(pid)
+                if isinstance(data.get("discovered_default"), dict):
+                    default.update(data["discovered_default"])
+            else:
+                self._write_watchdog_config(overrides, sorted(exclude), default)
+        except Exception as e:
+            log(f"Watchdog: failed to load config ({e}) — using built-in defaults", level="WARNING")
+        # Hard excludes — never restartable, cannot be re-included.
+        exclude.add(CLAUDEBRIDGE_ID)
+        exclude.add(self.pluginId)
+        self.watchdog_overrides          = overrides
+        self.watchdog_exclude            = exclude
+        self.watchdog_discovered_default = default
+
+    def _write_watchdog_config(self, overrides, exclude_list, default):
+        try:
+            os.makedirs(os.path.dirname(WATCHDOG_CONFIG_FILE), exist_ok=True)
+            doc = {
+                "_comment":  "Device Health Monitor — plugin watchdog policy (auto-discovering).",
+                "_comment2": "The watchdog auto-discovers any plugin that owns comms devices. "
+                             "'overrides' tunes per-plugin thresholds (stale_minutes / cooldown_minutes / "
+                             "max_per_day / enabled). 'exclude' lists plugin ids never to restart. "
+                             "'include' un-excludes a code-denylisted plugin. 'discovered_default' is the "
+                             "policy for discovered plugins with no override.",
+                "_comment3": f"{CLAUDEBRIDGE_ID} and {self.pluginId} are ALWAYS excluded in code.",
+                "overrides":          overrides,
+                "exclude":            exclude_list,
+                "include":            [],
+                "discovered_default": default,
+            }
+            with open(WATCHDOG_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=4)
+            log(f"Watchdog: wrote default config to {WATCHDOG_CONFIG_FILE}")
+        except Exception as e:
+            log(f"Watchdog: failed to write config file: {e}", level="ERROR")
+
+    def _discover_candidates(self, plugin_devices):
+        """Return {pid: policy} for every device-owning comms plugin to watch.
+        A plugin qualifies if it owns >=1 enabled+configured device that maintains
+        lastSuccessfulComm and it is not excluded. Policy = tuned override if known,
+        else the generous discovered default."""
+        candidates = {}
+        for pid, devs in plugin_devices.items():
+            if pid in self.watchdog_exclude:
+                continue
+            if not any(d.lastSuccessfulComm is not None for d in devs):
+                continue  # no comm timestamps => virtual/derived, not staleness-checkable
+            policy = dict(self.watchdog_discovered_default)
+            if pid in self.watchdog_overrides:
+                policy.update(self.watchdog_overrides[pid])
+            if not policy.get("enabled", True):
+                continue
+            candidates[pid] = policy
+        return candidates
+
+    def _run_plugin_watchdog(self):
+        if not self.watchdog_enabled:
+            return
+        now = datetime.now()
+        self._roll_restart_day(now)
+
+        plugin_devices: dict = {}
+        for dev in indigo.devices:
+            if dev.enabled and dev.configured:
+                plugin_devices.setdefault(dev.pluginId, []).append(dev)
+
+        candidates = self._discover_candidates(plugin_devices)
+        for pid, policy in candidates.items():
+            if pid in (CLAUDEBRIDGE_ID, self.pluginId):   # defensive
+                continue
+            try:
+                verdict, reason = self._assess_plugin_health(pid, policy, plugin_devices.get(pid, []), now)
+                if verdict in ("crashed", "wedged"):
+                    self._maybe_restart_plugin(pid, policy, verdict, reason, now)
+                elif self.debug:
+                    log(f"Watchdog: {self._plugin_label(pid)} {verdict} ({reason})")
+            except Exception as e:
+                log(f"Watchdog: error assessing {pid}: {e}", level="ERROR")
+
+        self._persist_watchdog_state()
+
+    def _assess_plugin_health(self, pid, policy, devs, now):
+        """Return (verdict, reason); verdict in ok / crashed / wedged / unavailable."""
+        try:
+            wrapper = indigo.server.getPlugin(pid)
+        except Exception as e:
+            return "unavailable", f"getPlugin failed: {e}"
+        if not wrapper.isInstalled():
+            return "unavailable", "not installed"
+        if not wrapper.isEnabled():
+            return "unavailable", "disabled by user"
+
+        # Give a plugin we just restarted time to come back before re-judging it.
+        last = self._last_restart_dt(pid)
+        if last and (now - last).total_seconds() < POST_RESTART_GRACE_MIN * 60:
+            return "ok", "post-restart grace"
+
+        if not wrapper.isRunning():
+            return "crashed", "enabled but not running"
+
+        comms = [d.lastSuccessfulComm for d in devs if d.lastSuccessfulComm is not None]
+        if not comms:
+            return "ok", "no comm timestamps to assess"
+        newest  = max(comms)
+        age_min = (now - newest).total_seconds() / 60.0
+        stale   = float(policy.get("stale_minutes", self.watchdog_discovered_stale))
+        if age_min > stale:
+            return "wedged", (f"newest of {len(devs)} device(s) last comm "
+                              f"{age_min:.0f}m ago (threshold {stale:.0f}m)")
+        return "ok", f"newest comm {age_min:.0f}m ago"
+
+    def _maybe_restart_plugin(self, pid, policy, verdict, reason, now):
+        label        = self._plugin_label(pid)
+        rec          = self._restart_record(pid, now)
+        cooldown_min = float(policy.get("cooldown_minutes", 30))
+        max_per_day  = int(policy.get("max_per_day", 3))
+        last         = self._last_restart_dt(pid)
+
+        if last and (now - last).total_seconds() < cooldown_min * 60:
+            if self.debug:
+                mins = (now - last).total_seconds() / 60.0
+                log(f"Watchdog: {label} {verdict} but restarted {mins:.0f}m ago "
+                    f"(cooldown {cooldown_min:.0f}m) — skipping")
+            return
+
+        if rec["restarts_today"] >= max_per_day:
+            if not rec.get("cap_alerted"):
+                rec["cap_alerted"] = True
+                msg = (f"{label} still {verdict} after {rec['restarts_today']} restart(s) today "
+                       f"(daily cap {max_per_day}). Needs manual attention. {reason}")
+                log(msg, level="ERROR")
+                self._send_pushover(f"Watchdog: {label} needs attention", msg, priority="1")
+            return
+
+        if self.watchdog_dry_run:
+            log(f"[DRY RUN] Watchdog WOULD restart {label} — {verdict}: {reason}", level="WARNING")
+            self._send_pushover(f"[DRY RUN] Watchdog: {label}",
+                                f"Would restart ({verdict}): {reason}", priority="0")
+            return
+
+        log(f"Watchdog restarting {label} — {verdict}: {reason}", level="WARNING")
+        try:
+            try:
+                indigo.server.getPlugin(pid).restart(waitUntilDone=False)
+            except TypeError:
+                indigo.server.getPlugin(pid).restart()
+        except Exception as e:
+            log(f"Watchdog: restart of {label} FAILED: {e}", level="ERROR")
+            self._send_pushover(f"Watchdog: {label} restart FAILED", str(e), priority="1")
+            return
+
+        rec["last_restart"]   = now.isoformat()
+        rec["restarts_today"] = rec["restarts_today"] + 1
+        rec["cap_alerted"]    = False
+        log(f"Watchdog: {label} restart issued (#{rec['restarts_today']} today)")
+        self._send_pushover(f"Watchdog restarted {label}",
+                            f"{verdict}: {reason}\nRestart #{rec['restarts_today']} today.", priority="0")
+
+    # ── watchdog state helpers ────────────────────────────────────────────────
+
+    def _restart_record(self, pid, now):
+        rec   = self.restart_state.get(pid)
+        today = now.strftime("%Y-%m-%d")
+        if rec is None:
+            rec = {"last_restart": None, "restarts_today": 0, "day": today, "cap_alerted": False}
+            self.restart_state[pid] = rec
+        return rec
+
+    def _roll_restart_day(self, now):
+        today = now.strftime("%Y-%m-%d")
+        for rec in self.restart_state.values():
+            if rec.get("day") != today:
+                rec["day"]            = today
+                rec["restarts_today"] = 0
+                rec["cap_alerted"]    = False
+
+    def _last_restart_dt(self, pid):
+        rec = self.restart_state.get(pid)
+        if not rec or not rec.get("last_restart"):
+            return None
+        try:
+            return datetime.fromisoformat(rec["last_restart"])
+        except Exception:
+            return None
+
+    def _plugin_label(self, pid):
+        try:
+            name = indigo.server.getPlugin(pid).pluginDisplayName
+            if name:
+                return name
+        except Exception:
+            pass
+        return pid
+
+    def _persist_watchdog_state(self):
+        try:
+            self.pluginPrefs["watchdog_state_json"] = json.dumps(self.restart_state)
+            indigo.server.savePluginPrefs()
+        except Exception as e:
+            log(f"Watchdog: failed to persist restart state: {e}", level="ERROR")
+
+    def _restore_watchdog_state(self):
+        try:
+            raw = self.pluginPrefs.get("watchdog_state_json", "{}")
+            self.restart_state = json.loads(raw) or {}
+        except Exception as e:
+            log(f"Watchdog: could not restore restart state: {e}", level="WARNING")
+            self.restart_state = {}
+
     # ------------------------------------------------------------------
-    # Alert state persistence
+    # Alert state persistence (device-level scan)
     # ------------------------------------------------------------------
 
     def _persist_alerted(self):
@@ -354,6 +719,59 @@ class Plugin(indigo.PluginBase):
         log(f"Alert state cleared ({count} device(s) reset). Next scan starts fresh.")
         return True
 
+    # ── watchdog menus ─────────────────────────────────────────────────────────
+
+    def menuRunWatchdogNow(self, valuesDict=None, typeId=None):
+        log("Manual watchdog check triggered")
+        self._load_watchdog_config()
+        self._run_plugin_watchdog()
+        return True
+
+    def menuShowWatchdogStatus(self, valuesDict=None, typeId=None):
+        if log_startup_banner:
+            log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion)
+        self._load_watchdog_config()
+        now = datetime.now()
+        self._roll_restart_day(now)
+
+        plugin_devices: dict = {}
+        for dev in indigo.devices:
+            if dev.enabled and dev.configured:
+                plugin_devices.setdefault(dev.pluginId, []).append(dev)
+        candidates = self._discover_candidates(plugin_devices)
+
+        mode  = "DRY RUN" if self.watchdog_dry_run else "LIVE"
+        state = "enabled" if self.watchdog_enabled else "DISABLED"
+        log(f"--- Plugin Watchdog ({state}, {mode}, auto-discover) — {len(candidates)} plugin(s) watched ---")
+        for pid in sorted(candidates):
+            policy          = candidates[pid]
+            devs            = plugin_devices.get(pid, [])
+            verdict, reason = self._assess_plugin_health(pid, policy, devs, now)
+            src             = "tuned" if pid in self.watchdog_overrides else "auto"
+            rec             = self.restart_state.get(pid, {})
+            extra           = ""
+            if rec.get("last_restart"):
+                extra = f" | last restart {rec['last_restart']}, {rec.get('restarts_today', 0)} today"
+            lvl = "WARNING" if verdict in ("crashed", "wedged") else "INFO"
+            log(f"  {self._plugin_label(pid)}: {verdict} [{src} {policy.get('stale_minutes')}m] "
+                f"({reason}){extra}", level=lvl)
+        log(f"--- {len(self.watchdog_exclude)} excluded | config: {WATCHDOG_CONFIG_FILE} ---")
+        return True
+
+    def menuResetRestartCounters(self, valuesDict=None, typeId=None):
+        self.restart_state = {}
+        self._persist_watchdog_state()
+        log("Watchdog: restart counters and cooldowns cleared.")
+        return True
+
+    def menuToggleDryRun(self, valuesDict=None, typeId=None):
+        self.watchdog_dry_run = not self.watchdog_dry_run
+        self.pluginPrefs["watchdogDryRun"] = self.watchdog_dry_run
+        indigo.server.savePluginPrefs()
+        log(f"Watchdog dry-run -> {'ON (no real restarts)' if self.watchdog_dry_run else 'OFF (LIVE restarts)'}",
+            level="WARNING")
+        return True
+
     def showPluginInfo(self, valuesDict=None, typeId=None):
         if log_startup_banner:
             log_startup_banner(self.pluginId, self.pluginDisplayName, self.pluginVersion, extras=[
@@ -364,8 +782,14 @@ class Plugin(indigo.PluginBase):
                 ("Exclusions:",    f"{len(self.excluded_names)} device(s)"),
                 ("Exclusions file:", EXCLUSIONS_FILE),
                 ("Protocols:",     "Z2M, ShellyDirect, ShellyGen1, Z-Wave, Ecowitt"),
+                ("Watchdog:",      f"{'ON' if self.watchdog_enabled else 'OFF'} "
+                                   f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover)"),
+                ("Watchdog tuned:", f"{len(self.watchdog_overrides)} plugin(s)"),
+                ("Watchdog excluded:", f"{len(self.watchdog_exclude)} plugin(s)"),
+                ("Watchdog config:",  WATCHDOG_CONFIG_FILE),
             ])
         else:
             indigo.server.log(f"{self.pluginDisplayName} v{self.pluginVersion} | "
                               f"{len(self.alerted)} outstanding alert(s) | "
-                              f"{len(self.excluded_names)} excluded")
+                              f"{len(self.excluded_names)} excluded | "
+                              f"watchdog {'ON' if self.watchdog_enabled else 'OFF'}")
