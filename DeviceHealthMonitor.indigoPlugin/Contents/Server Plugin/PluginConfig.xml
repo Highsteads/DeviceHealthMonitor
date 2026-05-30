@@ -21,8 +21,8 @@
     </Field>
 
     <Field id="zwave_mains_hours" type="textfield" defaultValue="6">
-        <Label>Mains device threshold (hours)</Label>
-        <Description>Alert if a mains-powered Z-Wave device has not communicated for this many hours.</Description>
+        <Label>Mains device threshold (hours) — not used</Label>
+        <Description>No longer used. Mains Z-Wave health is now judged by Indigo's own errorState, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Description>
     </Field>
 
     <Field id="sep_ecowitt" type="separator"/>

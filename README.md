@@ -9,7 +9,7 @@ An Indigo home automation plugin that (1) continuously monitors all physical dev
 | Zigbee (via Z2M) | Zigbee2MQTTBridge | `lastSuccessfulComm` freshness (availability can sit stale at "online") |
 | Shelly Gen2/3/4 | ShellyDirect | `deviceOnline` state (True/False) |
 | Shelly Gen1 | ShellyGen1 | `deviceOnline` state (True/False) |
-| Z-Wave | Indigo native | `lastSuccessfulComm` timestamp vs threshold |
+| Z-Wave | Indigo native | Indigo's `errorState` for mains, `lastSuccessfulComm` threshold for battery |
 | Ecowitt | Ecowitt plugin | `lastChanged` timestamp vs threshold (proxy) |
 
 Everything else is ignored by the *device-level* scan above (HomeKit bridges, virtual devices, timers, etc.). The **plugin watchdog** (below) is a separate layer that does watch comms plugins such as SigenEnergyManager, EcoFlow and RAMSES — at the plugin level rather than per device.

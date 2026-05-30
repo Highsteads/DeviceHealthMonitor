@@ -296,14 +296,26 @@ class Plugin(indigo.PluginBase):
         return not online, "deviceOnline=False"
 
     def _check_zwave(self, dev):
-        last = dev.lastSuccessfulComm
-        if last is None:
-            return True, "lastSuccessfulComm=None (never communicated)"
-        hours      = self._hours_since(last)
-        is_battery = dev.batteryLevel is not None
-        threshold  = self.zwave_battery_hours if is_battery else self.zwave_mains_hours
-        kind       = "battery" if is_battery else "mains"
-        return hours > threshold, f"last comm {hours:.1f}h ago ({kind}, threshold {threshold}h)"
+        # Indigo's own errorState is the reliable signal — it is set when the
+        # controller can't reach the node (failed poll / dead node). lastSuccessfulComm
+        # is NOT a health signal for mains Z-Wave devices that aren't actively polled:
+        # it only tracks "time since last used", so an idle-but-alive light or repeater
+        # reads stale for days. Confirmed 29-05-2026 — 11 of 20 mains nodes were >6h
+        # stale with errorState clear (En Suite floor heating, Loft repeater, everyday
+        # lights), every one perfectly healthy.
+        if dev.errorState:
+            return True, f"errorState={dev.errorState!r}"
+        # Battery Z-Wave devices DO report on a wake cadence, so prolonged silence is
+        # meaningful (flat battery / fallen off the mesh).
+        if dev.batteryLevel is not None:
+            last = dev.lastSuccessfulComm
+            if last is None:
+                return True, "battery device never communicated (lastSuccessfulComm=None)"
+            hours = self._hours_since(last)
+            return hours > self.zwave_battery_hours, \
+                f"battery device: last comm {hours:.1f}h ago (threshold {self.zwave_battery_hours}h)"
+        # Mains device with no error — healthy (stale comm is normal for un-polled nodes).
+        return False, ""
 
     def _check_ecowitt(self, dev):
         last = dev.lastChanged
