@@ -5,8 +5,14 @@
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 4.8
-# Date:        29-05-2026
-# Version:     2.0
+# Date:        19-06-2026
+# Version:     2.1
+#
+# v2.1 (19-06-2026): tightened the EcoFlow Cloud wedged threshold 720->60 min.
+# EcoFlow Cloud v1.8+ now actively polls each device every ~10s (River 3 / Delta 3
+# don't stream passively), so lastSuccessfulComm stays fresh and a 60-min gap is a
+# genuine wedge rather than normal idle — the old 720-min value was a workaround for
+# the passive-subscribe bug that v1.8 fixed.
 #
 # v2.0 (29-05-2026): Added the Plugin Watchdog layer. The device-level scan
 # (unchanged) alerts on individual offline/stale devices; the new watchdog works
@@ -56,7 +62,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.0"
+PLUGIN_VERSION = "2.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -88,9 +94,10 @@ WATCHDOG_OVERRIDES = {
     "com.clives.indigoplugin.mqttexplorerbridge":       {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
     "com.clives.indigoplugin.esphomebridge":            {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
     "com.clives.indigoplugin.sigenergy-energy-manager": {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
-    # EcoFlow pushes from the cloud in bursts and goes quiet when idle (~4.5h between
-    # updates in live testing) — lenient wedged threshold; crashed-detection still immediate.
-    "com.clives.indigoplugin.ecoflowcloud":             {"stale_minutes": 720, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    # EcoFlow Cloud v1.8+ actively polls each device every ~10s (River 3 / Delta 3 don't
+    # stream passively), so lastSuccessfulComm stays fresh — a 60-min gap now means a
+    # genuine wedge (dead MQTT + failed reconnect), not normal idle. Tightened 720->60.
+    "com.clives.indigoplugin.ecoflowcloud":             {"stale_minutes": 60,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     "com.clives.indigoplugin.ecowitt":                  {"stale_minutes": 20,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     # RAMSES TRVs report infrequently (esp. summer, heating off) — lenient threshold.
     "uk.co.clives.ramses.esp":                          {"stale_minutes": 180, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
