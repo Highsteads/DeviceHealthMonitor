@@ -6,7 +6,11 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 4.8
 # Date:        19-06-2026
-# Version:     2.1
+# Version:     2.2
+#
+# v2.2 (19-06-2026): removed the WATCHDOG_OVERRIDES entry for MQTTExplorerBridge —
+# that plugin has been uninstalled and deleted, so the tuned threshold referenced
+# a plugin that no longer exists (harmless dead entry; removed for tidiness).
 #
 # v2.1 (19-06-2026): tightened the EcoFlow Cloud wedged threshold 720->60 min.
 # EcoFlow Cloud v1.8+ now actively polls each device every ~10s (River 3 / Delta 3
@@ -62,7 +66,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.1"
+PLUGIN_VERSION = "2.2"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -91,7 +95,6 @@ POST_RESTART_GRACE_MIN = 5
 WATCHDOG_OVERRIDES = {
     "com.clives.indigoplugin.z2mbridge":                {"stale_minutes": 5,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
     "com.clives.indigoplugin.tasmotabridge":            {"stale_minutes": 8,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
-    "com.clives.indigoplugin.mqttexplorerbridge":       {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
     "com.clives.indigoplugin.esphomebridge":            {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
     "com.clives.indigoplugin.sigenergy-energy-manager": {"stale_minutes": 10,  "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
     # EcoFlow Cloud v1.8+ actively polls each device every ~10s (River 3 / Delta 3 don't
