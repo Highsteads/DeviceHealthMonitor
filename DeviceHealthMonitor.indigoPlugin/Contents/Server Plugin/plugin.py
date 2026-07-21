@@ -5,8 +5,21 @@
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 4.8
-# Date:        19-06-2026
-# Version:     2.2.1
+# Date:        21-07-2026
+# Version:     2.2.2
+#
+# v2.2.2 (21-07-2026): shared plugin_utils.py refreshed to v1.3 — the
+# estate-wide propagation of the four Appliance Monitor deep-review fixes.
+# * install_timestamp_filter() is idempotent — a second call used to stack a
+#   second filter, so every log line came out with two timestamps.
+# * `import indigo` is soft, so the module imports outside the Indigo host and
+#   can be exercised by offline tests.
+# * A malformed log call keeps its arguments in the log instead of dropping
+#   them, so a %-placeholder mismatch is visible.
+# * New shared as_bool() — a pref re-serialised as the string "false" is
+#   truthy, which is exactly the wrong answer.
+# This bundle was still on plugin_utils v1.1 and had no timestamp filter at
+# all — it now has the whole v1.3 surface.
 #
 # v2.2.1 (21-07-2026): LOG-LEVEL FIX. indigo.server.log(level=...) wants a Python
 # logging INT — a STRING is silently ignored and the line logs as plain Info.
@@ -72,7 +85,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.2.1"
+PLUGIN_VERSION = "2.2.2"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
