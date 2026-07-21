@@ -6,7 +6,13 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 4.8
 # Date:        19-06-2026
-# Version:     2.2
+# Version:     2.2.1
+#
+# v2.2.1 (21-07-2026): LOG-LEVEL FIX. indigo.server.log(level=...) wants a Python
+# logging INT — a STRING is silently ignored and the line logs as plain Info.
+# The log() helper passed its level name straight through, so every WARNING and
+# ERROR raised through it had been appearing as an ordinary Info line. Added
+# _lvl() to map the name to a real level. Estate-wide sweep (38 files).
 #
 # v2.2 (19-06-2026): removed the WATCHDOG_OVERRIDES entry for MQTTExplorerBridge —
 # that plugin has been uninstalled and deleted, so the tuned threshold referenced
@@ -66,7 +72,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.2"
+PLUGIN_VERSION = "2.2.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -141,8 +147,32 @@ WATCHDOG_CONFIG_FILE = os.path.expanduser(
 )
 
 
+import logging
+
+
+_LOG_LEVELS = {
+    "DEBUG":   logging.DEBUG,
+    "INFO":    logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR":   logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+
+def _lvl(level):
+    """Map a level NAME to a Python logging int.
+
+    indigo.server.log(level=...) wants an int. A STRING is silently ignored
+    and the line logs as plain Info, which hid every WARNING and ERROR raised
+    through log() until this was corrected (21-07-2026).
+    """
+    if isinstance(level, int):
+        return level
+    return _LOG_LEVELS.get(str(level).upper(), logging.INFO)
+
+
 def log(message, level="INFO"):
-    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=level)
+    indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=_lvl(level))
 
 
 class Plugin(indigo.PluginBase):
