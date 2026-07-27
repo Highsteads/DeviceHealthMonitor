@@ -6,7 +6,18 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5
 # Date:        27-07-2026
-# Version:     2.3.0
+# Version:     2.3.1
+#
+# v2.3.1 (27-07-2026): a latched alert is now cleared when its device stops being
+# scannable, so the outstanding-alert list can no longer accumulate entries that
+# nothing is able to clear. Two routes, both found while verifying v2.3.0 live:
+# * The device was DELETED. The scan only iterates devices that exist, so its
+#   latch was unreachable. Four had built up, the oldest from 12-06-2026.
+# * The device was EXCLUDED by hand-editing exclusions.json. The skip sits above
+#   the recovery branch, so an existing latch could never clear. Both Z2M bridge
+#   devices had been listed as outstanding since 12-06-2026. (The "Add Offline
+#   Devices to Exclusions" menu item already cleared them; a hand-edit did not.)
+# Live: 12 outstanding alerts fell to 5, all five genuinely offline.
 #
 # v2.3.0 (27-07-2026): QUIET DEVICES — a per-device staleness threshold, plus
 # three fixes and this plugin's first test suite.
@@ -139,7 +150,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.3.0"
+PLUGIN_VERSION = "2.3.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -533,6 +544,14 @@ class Plugin(indigo.PluginBase):
             if not dev.enabled:
                 continue
             if dev.name.lower() in self.excluded_names:
+                # Excluding a device by hand-editing the file used to leave any
+                # existing latch stuck for good — the skip happens before the
+                # recovery branch below, so it could never be cleared. Two Z2M
+                # bridge devices had been listed as outstanding since 12-Jun-2026.
+                # (The "Add Offline Devices to Exclusions" menu already did this.)
+                if self.alerted.pop(dev.id, None) is not None:
+                    log(f"Cleared alert for now-excluded device {dev.name}")
+                self._undelivered.discard(dev.id)
                 continue
 
             is_offline, reason = self._check_device_health(dev)

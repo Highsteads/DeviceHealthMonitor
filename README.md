@@ -123,6 +123,11 @@ No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
 
+**v2.3.1** — a device's alert is now cleared when it stops being scannable, so the
+outstanding list can no longer collect entries that nothing is able to clear: one for a
+device that was deleted, and one for a device excluded by hand-editing `exclusions.json`
+after it had already alerted.
+
 **v2.3.0** — **Quiet devices**: a per-device staleness threshold for sensors that are
 silent by design, in `quiet_devices.json`, reloaded every scan so it can be tuned without
 a restart. A hard fault still alerts either way. Also: an alert that could not be

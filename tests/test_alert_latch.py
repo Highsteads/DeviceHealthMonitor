@@ -130,6 +130,19 @@ def test_excluded_and_disabled_devices_are_never_scanned(plugin_mod, plugin, pus
     assert plugin.alerted == {}
 
 
+def test_excluding_a_device_clears_any_latch_it_already_had(plugin_mod, plugin, pushover):
+    """The exclusion skip sits above the recovery branch, so a device excluded
+    after it had already alerted stayed on the outstanding list for good."""
+    plugin_mod.indigo.devices[1] = offline_device(1, "Noisy One")
+    plugin._run_scan()
+    assert 1 in plugin.alerted
+
+    plugin.excluded_names = {"noisy one"}
+    plugin._run_scan()
+    assert plugin.alerted == {}
+    assert plugin._undelivered == set()
+
+
 def test_a_deleted_device_stops_counting_as_an_outstanding_alert(plugin_mod, plugin, pushover):
     """The scan only iterates devices that exist, so a deleted one could never be
     cleared and sat in alerted_json for good."""
