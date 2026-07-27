@@ -18,11 +18,41 @@ Everything else is ignored by the *device-level* scan above (HomeKit bridges, vi
 
 - Runs a background scan on a configurable interval (5–30 min)
 - Protocol-aware health checks — uses the right signal for each device type
-- Battery vs mains thresholds for Z-Wave devices (default: 24h battery, 6h mains)
-- **One-shot alerting**: alerts fire once per outage, not every scan cycle
+- **Quiet devices** — a per-device threshold for sensors that are silent by design
+- **One-shot alerting**: alerts fire once per outage, not every scan cycle, and a device
+  is only marked as alerted once the notification has actually been delivered
 - Consolidated Pushover notification (all new offline devices in one message)
 - Alert state persists across plugin restarts
-- "Scan Now" and "Show Offline Devices" menu items
+- "Scan Now", "Show Offline Devices" and "Show Quiet Devices" menu items
+
+## Quiet devices
+
+Some sensors report only when something happens. A cupboard presence sensor that fires
+when the door opens goes days without a word and is perfectly healthy — but every
+threshold above would call it offline, and a monitor that cries wolf gets swiped away
+without being read.
+
+Give any such device a threshold of its own in
+`~/Documents/Indigo/DeviceHealthMonitor/quiet_devices.json`, written on first run:
+
+```json
+{
+    "quiet_devices": [
+        {"id": 123456789, "hours": 240, "note": "cupboard door, opens twice a week"},
+        {"name": "Loft Hatch Contact", "hours": "never"}
+    ]
+}
+```
+
+Each entry takes a device `id` (preferred) or `name`, plus `hours` — which may be higher
+**or lower** than the protocol default — or `"never"` to stop alerting on silence
+altogether. Edits apply on the next scan, with no restart.
+
+Two things it deliberately does not do. It does not silence a **hard fault**: an
+`errorState`, a z2m `availability=offline` or a Shelly `deviceOnline=False` still alerts,
+because those are the stack reporting a problem rather than us inferring one from
+silence. And it is a longer threshold rather than an exemption, so a flat battery still
+surfaces in the end. To ignore a device outright, list it in `exclusions.json` instead.
 
 ## Plugin Watchdog (v2.0)
 
@@ -53,9 +83,19 @@ Open Plugin > Device Health Monitor > Configure:
 
 - **Scan interval** — how often to scan (5/10/15/30 min, default 10)
 - **Z-Wave battery threshold** — hours before alerting on a battery Z-Wave device (default 24)
-- **Z-Wave mains threshold** — hours before alerting on a mains Z-Wave device (default 6)
+- **Z-Wave mains threshold** — retired, nothing reads it. Mains Z-Wave health is judged by
+  Indigo's own `errorState` instead, because `lastSuccessfulComm` on an un-polled mains
+  node only tracks time since last used — an idle-but-alive light reads stale for days.
 - **Ecowitt threshold** — hours since last state change before alerting (default 24)
+- **Z2M stale threshold** — hours without communication before alerting (default 12)
+- **Enable plugin watchdog** — turn the whole watchdog layer on or off (default on)
+- **Dry-run** — the watchdog logs and Pushovers what it *would* restart, without acting
+  (default on)
+- **Auto-discovered default stale threshold** — the wedge threshold in minutes for a
+  discovered plugin with no tuned override (default 60)
 - **Debug logging** — verbose scan output
+
+Per-device staleness lives in `quiet_devices.json`, not here — see **Quiet devices** above.
 
 ## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
@@ -72,6 +112,39 @@ credentials documentation.
 - Indigo 2022.1 or later (Python 3.10+)
 - Pushover plugin (io.thechad.indigoplugin.pushover) — for alerts
 - One or more of: Zigbee2MQTTBridge, ShellyDirect, ShellyGen1, Z-Wave devices, Ecowitt plugin
+
+## Development
+
+```bash
+python3 -m pytest tests -q
+```
+
+No Indigo server and no hardware needed — see `tests/README.md`.
+
+## Recent changes
+
+**v2.3.0** — **Quiet devices**: a per-device staleness threshold for sensors that are
+silent by design, in `quiet_devices.json`, reloaded every scan so it can be tuned without
+a restart. A hard fault still alerts either way. Also: an alert that could not be
+delivered no longer latches, so a Pushover outage is retried instead of swallowed;
+`watchdog_plugins.json` is reconciled once against the defaults that seeded it, so
+thresholds tuned in later releases finally reach installs that already had the file;
+config values are coerced safely, so a cleared field can no longer stop the plugin
+loading and a saved dialog can no longer flip the watchdog back into dry-run; and the
+plugin gets its first test suite.
+
+**v2.2** — removed a watchdog override for a plugin that no longer exists.
+
+**v2.1** — tightened the EcoFlow Cloud wedge threshold from 720 to 60 minutes, now that
+it polls actively rather than waiting on a passive subscription.
+
+**v2.0** — added the plugin watchdog: auto-discovers comms plugins and restarts any that
+crash or wedge. Born from a Zigbee2MQTT bridge that kept a dead MQTT socket after a
+network blip and went quietly silent.
+
+**v1.1** — exclusion file and management menu items.
+
+**v1.0** — initial release: device-level offline scan with consolidated Pushover alerts.
 
 ## Authors & licence
 

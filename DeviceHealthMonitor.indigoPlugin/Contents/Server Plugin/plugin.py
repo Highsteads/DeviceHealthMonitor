@@ -4,9 +4,47 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Opus 4.8
-# Date:        21-07-2026
-# Version:     2.2.2
+# Author:      CliveS & Claude Opus 5
+# Date:        27-07-2026
+# Version:     2.3.0
+#
+# v2.3.0 (27-07-2026): QUIET DEVICES — a per-device staleness threshold, plus
+# three fixes and this plugin's first test suite.
+#
+# * Some sensors are silent BY DESIGN. A cupboard presence sensor that reports
+#   only when the door opens went 56 hours without a word, perfectly healthy,
+#   and the 12-hour z2m default called it offline 17 times — once at 01:36. A
+#   health monitor that cries wolf gets swiped away without being read, and then
+#   a real outage looks exactly the same. Nothing in the plugin could reach an
+#   individual device: WATCHDOG_OVERRIDES and WATCHDOG_DENYLIST are per-PLUGIN
+#   and belong to the watchdog, and exclusions.json is all-or-nothing.
+#   quiet_devices.json now gives a device its own threshold — by id or by name,
+#   in hours, or "never". Deliberately a longer threshold rather than an
+#   exclusion, so a flat battery still surfaces eventually. It is reloaded every
+#   scan cycle, so a threshold can be tuned without a restart, and it never
+#   suppresses a HARD fault: errorState, availability=offline and
+#   deviceOnline=False all still alert. Ships EMPTY with a worked example —
+#   seeding real device ids would paint in one person's install.
+# * An alert that could not be DELIVERED no longer latches. _run_scan marked the
+#   device "already alerted" ten lines before the Pushover was attempted, so an
+#   outage was logged and then never notified, for good. Delivery now returns a
+#   bool and the latch only happens on success. Same bug class as
+#   WaterLeakMonitor v1.8.
+# * watchdog_plugins.json no longer shadows the code. The file OVERLAYS the
+#   built-in policy and was only ever written when absent, so the v2.1 EcoFlow
+#   720->60 tightening and the v2.2 entry removal had never taken effect on any
+#   install that already had the file. A schema marker plus a frozen v1 baseline
+#   reconciles it once: an on-disk policy identical to the seed it came from is
+#   dropped so current code wins, anything genuinely edited is kept, and the old
+#   file is copied to .bak-v1 first.
+# * Config coercion is guarded throughout. Every float()/int() was bare, so a
+#   cleared numeric field would have stopped the plugin loading. The checkboxes
+#   now use as_bool: Indigo re-serialises a saved checkbox as the STRING
+#   "false", and bool("false") is True — one save of the Configure dialog would
+#   have switched watchdog dry-run back ON and quietly disabled every real
+#   restart. Both pref blocks now share one _apply_prefs, which is how they
+#   would have drifted.
+# * First test suite for this plugin.
 #
 # v2.2.2 (21-07-2026): shared plugin_utils.py refreshed to v1.3 — the
 # estate-wide propagation of the four Appliance Monitor deep-review fixes.
@@ -57,6 +95,7 @@
 import json
 import os
 import os as _os
+import shutil
 import sys as _sys
 from datetime import datetime
 
@@ -67,6 +106,21 @@ try:
     from plugin_utils import log_startup_banner
 except ImportError:
     log_startup_banner = None
+try:
+    from plugin_utils import as_bool
+except ImportError:
+    def as_bool(value, default=False):
+        """Fallback for a bundled plugin_utils older than v1.3.
+
+        Per-key import so a missing as_bool cannot also cost us the banner.
+        """
+        if isinstance(value, bool):
+            return value
+        if value is None or value == "":
+            return default
+        if isinstance(value, (int, float)):
+            return bool(value)
+        return str(value).strip().lower() in ("true", "1", "yes", "on")
 
 # ---------------------------------------------------------------------------
 # Device-level health checks: which plugins we know how to check, and how.
@@ -85,11 +139,109 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.2.2"
+PLUGIN_VERSION = "2.3.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
 )
+
+# ---------------------------------------------------------------------------
+# Quiet devices — per-device staleness thresholds.
+# ---------------------------------------------------------------------------
+# Some sensors are silent BY DESIGN. A cupboard presence sensor that only reports
+# when the door opens goes days without a word and is perfectly healthy; against
+# the 12-hour z2m default it was reported offline 17 times, once at 01:36. A health
+# monitor that cries wolf gets swiped away without reading, and then a real outage
+# looks exactly the same.
+#
+# Deliberately a longer THRESHOLD rather than an exclusion: a flat battery must
+# still surface eventually. exclusions.json remains the way to ignore a device
+# outright.
+#
+# Its own file, NOT a key inside exclusions.json: _save_exclusions rebuilds that
+# document from a literal dict and writes it over the file, so anything colocated
+# there is destroyed by the next "Add All Offline Devices to Exclusions" click.
+QUIET_DEVICES_FILE = os.path.expanduser(
+    "~/Documents/Indigo/DeviceHealthMonitor/quiet_devices.json"
+)
+
+# Ships EMPTY with a worked example. Seeding real device ids would paint in one
+# person's install and mean nothing on anybody else's.
+QUIET_DEVICES_EXAMPLE = [
+    {"id": 123456789, "name": "Bathroom Cupboard Presence Sensor", "hours": 240,
+     "note": "Example only — delete this and add your own. Reports just twice a "
+             "week, so 10 days of silence is normal; a flat battery still alerts."},
+]
+
+_QUIET_BAD = object()   # distinct from None, which legitimately means "never"
+
+
+def _quiet_hours(raw):
+    """Coerce a quiet entry's 'hours': a non-negative number, or None for "never"."""
+    if isinstance(raw, str) and raw.strip().lower() == "never":
+        return None
+    try:
+        hours = float(raw)
+    except (TypeError, ValueError):
+        return _QUIET_BAD
+    return hours if hours >= 0 else _QUIET_BAD
+
+
+def parse_quiet_devices(data):
+    """Parse the quiet-devices document into two lookup maps.
+
+    Returns (by_id, by_name, problems). A value is float hours, or None meaning
+    "never alert on silence".
+
+    Never raises. One malformed entry is reported in `problems` and skipped while
+    the rest of the list still loads — a single bad hand-edit must not silently
+    disable the exemption for every other device.
+
+    TWO SEPARATE MAPS, deliberately. JSON object keys are always strings, so a map
+    keyed by device would leave "1035480788" ambiguous between an id and a name.
+    Keying ints and lowercased strings apart makes the collision impossible: a
+    device NAMED "1035480788" can only ever match through by_name.
+    """
+    by_id, by_name, problems = {}, {}, []
+    for entry in (data.get("quiet_devices") or []):
+        if not isinstance(entry, dict):
+            problems.append(f"{entry!r} is not an object")
+            continue
+        label = entry.get("name") or entry.get("id")
+        hours = _quiet_hours(entry.get("hours"))
+        if hours is _QUIET_BAD:
+            problems.append(f"{label!r}: bad 'hours' value {entry.get('hours')!r}")
+            continue
+        if entry.get("id") not in (None, ""):
+            try:
+                by_id[int(entry["id"])] = hours
+            except (TypeError, ValueError):
+                problems.append(f"{label!r}: bad 'id' value {entry['id']!r}")
+            continue
+        name = str(entry.get("name") or "").strip().lower()
+        if name:
+            by_name[name] = hours
+        else:
+            problems.append(f"{entry!r} has neither 'id' nor 'name'")
+    return by_id, by_name, problems
+
+
+def resolve_quiet_hours(dev_id, dev_name, default_hours, by_id, by_name):
+    """Staleness threshold for one device: its quiet override, else the default.
+
+    Id wins over name — naming a device by id is the more specific statement, and
+    a name can be edited in the Indigo UI at any time.
+
+    Returns (hours, overridden). hours is None when the device is set to "never",
+    meaning never alert on silence. One source of truth for both the threshold and
+    whether it was overridden, so the log text cannot drift from the decision.
+    """
+    if dev_id in by_id:
+        return by_id[dev_id], True
+    key = str(dev_name or "").strip().lower()
+    if key in by_name:
+        return by_name[key], True
+    return default_hours, False
 
 # ---------------------------------------------------------------------------
 # Plugin Watchdog — auto-discover and restart crashed or wedged comms plugins.
@@ -159,6 +311,62 @@ WATCHDOG_CONFIG_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/watchdog_plugins.json"
 )
 
+# The config file OVERLAYS the code and was only ever written when absent, so any
+# threshold tuned in a later release never reached an install that already had the
+# file. On this install that shadowed BOTH the v2.1 EcoFlow 720->60 tightening and
+# the v2.2 entry removal — neither had ever been in effect. The schema marker plus
+# the frozen v1 baseline below let us undo that once, without discarding real edits.
+WATCHDOG_SCHEMA = 2
+
+# The v2.0 overrides that seeded every pre-schema file. An on-disk policy identical
+# to its entry here was never touched by anyone, so the current code default wins.
+# DO NOT update this to track WATCHDOG_OVERRIDES — it is a historical record of what
+# was written, and rewriting it would make real user edits look like untouched seeds.
+WATCHDOG_V1_BASELINE = {
+    "com.clives.indigoplugin.z2mbridge":                {"stale_minutes": 5,    "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
+    "com.clives.indigoplugin.tasmotabridge":            {"stale_minutes": 8,    "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
+    "com.clives.indigoplugin.esphomebridge":            {"stale_minutes": 10,   "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    "com.clives.indigoplugin.sigenergy-energy-manager": {"stale_minutes": 10,   "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    "com.clives.indigoplugin.mqttexplorerbridge":       {"stale_minutes": 10,   "cooldown_minutes": 20, "max_per_day": 4, "enabled": True},
+    "com.clives.indigoplugin.ecoflowcloud":             {"stale_minutes": 720,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "com.clives.indigoplugin.ecowitt":                  {"stale_minutes": 20,   "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "uk.co.clives.ramses.esp":                          {"stale_minutes": 180,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "com.clives.indigoplugin.shellydirect":             {"stale_minutes": 15,   "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    "com.clives.indigoplugin.shellyg1":                 {"stale_minutes": 30,   "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+    "com.clives.indigoplugin.humaxaura":                {"stale_minutes": 1440, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+}
+
+
+def migrate_watchdog_config(data, v1_baseline):
+    """Reconcile a pre-schema watchdog config against the baseline that seeded it.
+
+    An on-disk policy EQUAL to its v1 baseline is an untouched default, so it is
+    dropped and the current code default takes over. Anything that differs is a
+    real edit and is kept, as is any plugin id we never shipped a default for.
+    'exclude' and 'include' are preserved verbatim — that list is hand-curated.
+
+    The one cost is that an edit which happens to match the old baseline exactly is
+    reverted, which is harmless: that is precisely the case where the code default
+    moving is the answer you wanted.
+
+    Pure — plain dicts in, plain dicts out, so the riskiest change in this release
+    is testable without breaking a live file.
+
+    Returns (migrated_data, dropped_ids, kept_ids).
+    """
+    overrides    = dict(data.get("overrides") or {})
+    dropped, kept = [], []
+    for pid in sorted(overrides):
+        baseline = v1_baseline.get(pid)
+        if baseline is not None and overrides[pid] == baseline:
+            dropped.append(pid)
+        else:
+            kept.append(pid)
+    migrated = dict(data)
+    migrated["overrides"] = {pid: overrides[pid] for pid in kept}
+    migrated["schema"]    = WATCHDOG_SCHEMA
+    return migrated, dropped, kept
+
 
 import logging
 
@@ -188,30 +396,63 @@ def log(message, level="INFO"):
     indigo.server.log(f"[{datetime.now().strftime('%H:%M:%S.%f')[:-3]}] {message}", level=_lvl(level))
 
 
+def _as_float(value, fallback):
+    """Coerce a config value to float, returning fallback on blank/None/non-numeric.
+
+    Indigo re-serialises every textfield as a STRING once a dialog has been saved,
+    and a cleared field comes back as "". A bare float("") raises ValueError in
+    __init__, which stops the plugin loading altogether. The fallback is coerced
+    too, so a string default can never leak unconverted into arithmetic.
+    """
+    try:
+        if value not in (None, ""):
+            return float(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
+def _as_int(value, fallback):
+    """Coerce a config value to int, returning fallback on blank/None/non-numeric.
+    The fallback is coerced too so a string default can't leak into arithmetic."""
+    try:
+        if value not in (None, ""):
+            return int(value)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return int(fallback)
+    except (TypeError, ValueError):
+        return fallback
+
+
 class Plugin(indigo.PluginBase):
 
     def __init__(self, pluginId, pluginDisplayName, pluginVersion, pluginPrefs):
         super().__init__(pluginId, pluginDisplayName, pluginVersion, pluginPrefs)
 
-        self.debug               = pluginPrefs.get("showDebugInfo", False)
-        self.scan_interval_sec   = int(pluginPrefs.get("scanIntervalMinutes", 10)) * 60
-        self.zwave_battery_hours = float(pluginPrefs.get("zwave_battery_hours", 24))
-        self.zwave_mains_hours   = float(pluginPrefs.get("zwave_mains_hours", 6))
-        self.ecowitt_hours       = float(pluginPrefs.get("ecowitt_hours", 24))
-        self.z2m_stale_hours     = float(pluginPrefs.get("z2m_stale_hours", 12))
+        self._apply_prefs(pluginPrefs)
 
         # device_id -> datetime first alerted
         self.alerted: dict[int, datetime] = {}
         self._restore_alerted()
+        # Device ids whose alert we could not deliver — so a Pushover outage keeps
+        # retrying instead of latching the device as "already alerted" (see _run_scan).
+        self._undelivered: set[int] = set()
 
         # Exclusion list (set of lowercase device names) for the device-level scan
         self.excluded_names: set[str] = set()
         self._load_exclusions()
 
-        # Plugin watchdog (auto-discovering)
-        self.watchdog_enabled          = bool(pluginPrefs.get("watchdogEnabled", True))
-        self.watchdog_dry_run          = bool(pluginPrefs.get("watchdogDryRun", True))
-        self.watchdog_discovered_stale = float(pluginPrefs.get("watchdogDefaultStaleMin", 60))
+        # Quiet devices — per-device staleness overrides for sensors that are
+        # silent BY DESIGN (a cupboard door opened twice a week).
+        self.quiet_by_id: dict[int, float | None]   = {}
+        self.quiet_by_name: dict[str, float | None] = {}
+        self._load_quiet_devices()
+
         # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool}
         self.restart_state: dict = {}
         self._restore_watchdog_state()
@@ -223,6 +464,27 @@ class Plugin(indigo.PluginBase):
 
         # Startup banner moved to showPluginInfo on demand (revised 25-May-2026 per Jay).
 
+    def _apply_prefs(self, values):
+        """Read every preference into its attribute, guarded.
+
+        One home for the lot, called from both __init__ and closedPrefsConfigUi —
+        they used to carry the same nine lines twice, which is how a pref gets
+        added to one and forgotten in the other.
+        """
+        self.debug                     = as_bool(values.get("showDebugInfo", False))
+        self.scan_interval_sec         = _as_int(values.get("scanIntervalMinutes", 10), 10) * 60
+        self.zwave_battery_hours       = _as_float(values.get("zwave_battery_hours", 24), 24)
+        self.zwave_mains_hours         = _as_float(values.get("zwave_mains_hours", 6), 6)
+        self.ecowitt_hours             = _as_float(values.get("ecowitt_hours", 24), 24)
+        self.z2m_stale_hours           = _as_float(values.get("z2m_stale_hours", 12), 12)
+        # Plugin watchdog (auto-discovering).
+        # as_bool, not bool: Indigo re-serialises a saved checkbox as the STRING
+        # "false", and bool("false") is True — which would silently switch dry-run
+        # back ON and quietly disable every real restart.
+        self.watchdog_enabled          = as_bool(values.get("watchdogEnabled", True), True)
+        self.watchdog_dry_run          = as_bool(values.get("watchdogDryRun", True), True)
+        self.watchdog_discovered_stale = _as_float(values.get("watchdogDefaultStaleMin", 60), 60)
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -231,7 +493,8 @@ class Plugin(indigo.PluginBase):
         log(f"{PLUGIN_NAME} v{PLUGIN_VERSION} started — {len(MONITORED_PLUGINS)} device protocols, "
             f"watchdog {'ON' if self.watchdog_enabled else 'OFF'} "
             f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover, "
-            f"{len(self.watchdog_exclude)} excluded), {len(self.excluded_names)} device exclusion(s)")
+            f"{len(self.watchdog_exclude)} excluded), {len(self.excluded_names)} device exclusion(s), "
+            f"{len(self.quiet_by_id) + len(self.quiet_by_name)} quiet device(s)")
 
     def shutdown(self):
         self._persist_alerted()
@@ -240,15 +503,7 @@ class Plugin(indigo.PluginBase):
 
     def closedPrefsConfigUi(self, valuesDict, userCancelled):
         if not userCancelled:
-            self.debug                     = valuesDict.get("showDebugInfo", False)
-            self.scan_interval_sec         = int(valuesDict.get("scanIntervalMinutes", 10)) * 60
-            self.zwave_battery_hours       = float(valuesDict.get("zwave_battery_hours", 24))
-            self.zwave_mains_hours         = float(valuesDict.get("zwave_mains_hours", 6))
-            self.ecowitt_hours             = float(valuesDict.get("ecowitt_hours", 24))
-            self.z2m_stale_hours           = float(valuesDict.get("z2m_stale_hours", 12))
-            self.watchdog_enabled          = bool(valuesDict.get("watchdogEnabled", True))
-            self.watchdog_dry_run          = bool(valuesDict.get("watchdogDryRun", True))
-            self.watchdog_discovered_stale = float(valuesDict.get("watchdogDefaultStaleMin", 60))
+            self._apply_prefs(valuesDict)
             self._load_watchdog_config()
             log("Preferences updated")
 
@@ -261,6 +516,7 @@ class Plugin(indigo.PluginBase):
         while True:
             try:
                 self._load_exclusions()       # reload each cycle — edits take effect without restart
+                self._load_quiet_devices()    # same, so a quiet threshold can be tuned live
                 self._run_scan()
                 self._load_watchdog_config()  # reload each cycle too
                 self._run_plugin_watchdog()
@@ -269,9 +525,9 @@ class Plugin(indigo.PluginBase):
             self.sleep(self.scan_interval_sec)
 
     def _run_scan(self):
-        now           = datetime.now()
-        newly_offline = []
-        recovered     = []
+        now       = datetime.now()
+        pending   = []   # [(dev_id, name, reason)] offline and not yet notified
+        recovered = []
 
         for dev in indigo.devices:
             if not dev.enabled:
@@ -284,24 +540,48 @@ class Plugin(indigo.PluginBase):
                 continue  # device type not monitored
 
             if is_offline:
-                if dev.id not in self.alerted:
-                    self.alerted[dev.id] = now
-                    newly_offline.append((dev.name, reason))
+                if dev.id in self.alerted:
+                    continue                      # already notified for this outage
+                # Log in full the first time. On a sustained delivery outage the
+                # device stays in _undelivered and we stop repeating the line every
+                # scan interval — _send_pushover's own WARNING is the heartbeat.
+                if dev.id not in self._undelivered:
                     log(f"[OFFLINE] {dev.name}: {reason}", level="WARNING")
+                pending.append((dev.id, dev.name, reason))
             else:
+                # Clear an undelivered entry silently: it recovered before we ever
+                # managed to tell anyone, so there is no alert to report recovery from.
+                self._undelivered.discard(dev.id)
                 if dev.id in self.alerted:
                     del self.alerted[dev.id]
                     recovered.append(dev.name)
                     log(f"[RECOVERED] {dev.name}")
 
-        if newly_offline:
-            self._alert_pushover(newly_offline)
+        # A deleted device is never seen by the loop above, so its latch could
+        # never be cleared and it sat in alerted_json for good — two devices
+        # deleted on 27-Jul-2026 were still listed as outstanding alerts.
+        for dev_id in [i for i in self.alerted if i not in indigo.devices]:
+            del self.alerted[dev_id]
+            self._undelivered.discard(dev_id)
+            log(f"Cleared alert for deleted device {dev_id}")
+
+        if pending:
+            # Latch ONLY on a delivered alert. Latching inside the loop meant a
+            # Pushover outage marked the device "already alerted", so the outage was
+            # logged and never notified — the WaterLeakMonitor v1.8 bug class.
+            if self._alert_pushover([(name, reason) for _, name, reason in pending]):
+                for dev_id, _, _ in pending:
+                    self.alerted[dev_id] = now
+                    self._undelivered.discard(dev_id)
+            else:
+                for dev_id, _, _ in pending:
+                    self._undelivered.add(dev_id)
 
         self._persist_alerted()
 
         if self.debug:
-            log(f"Scan complete — {len(newly_offline)} new offline, {len(recovered)} recovered, "
-                f"{len(self.alerted)} total outstanding")
+            log(f"Scan complete — {len(pending)} new offline, {len(recovered)} recovered, "
+                f"{len(self.alerted)} total outstanding, {len(self._undelivered)} undelivered")
 
     # ------------------------------------------------------------------
     # Per-protocol device health checks
@@ -334,9 +614,13 @@ class Plugin(indigo.PluginBase):
         # availability flag for devices z2m has actively marked offline.
         last = dev.lastSuccessfulComm
         if last is not None:
+            thresh, quiet = self._threshold_for(dev, self.z2m_stale_hours)
             hours = self._hours_since(last)
-            if hours > self.z2m_stale_hours:
-                return True, f"no comm for {hours:.1f}h (threshold {self.z2m_stale_hours}h)"
+            if thresh is not None and hours > thresh:
+                note = " — quiet device" if quiet else ""
+                return True, f"no comm for {hours:.1f}h (threshold {thresh:g}h{note})"
+        # A quiet device is exempt from SILENCE, never from a fault the stack has
+        # actively reported. z2m marking it offline is exactly that.
         avail = dev.states.get("availability", "online")
         if avail == "offline":
             return True, "availability=offline"
@@ -362,20 +646,36 @@ class Plugin(indigo.PluginBase):
         # meaningful (flat battery / fallen off the mesh).
         if dev.batteryLevel is not None:
             last = dev.lastSuccessfulComm
+            thresh, quiet = self._threshold_for(dev, self.zwave_battery_hours)
             if last is None:
+                # "Never communicated" IS an inference from silence, so a device set
+                # to "never" must not trip it. With a finite threshold it still does:
+                # a node that has never once reported is a genuine pairing fault.
+                if thresh is None:
+                    return False, ""
                 return True, "battery device never communicated (lastSuccessfulComm=None)"
+            if thresh is None:
+                return False, ""
             hours = self._hours_since(last)
-            return hours > self.zwave_battery_hours, \
-                f"battery device: last comm {hours:.1f}h ago (threshold {self.zwave_battery_hours}h)"
+            note  = " — quiet device" if quiet else ""
+            return hours > thresh, \
+                f"battery device: last comm {hours:.1f}h ago (threshold {thresh:g}h{note})"
         # Mains device with no error — healthy (stale comm is normal for un-polled nodes).
         return False, ""
 
     def _check_ecowitt(self, dev):
+        # NB this judges lastChanged, not lastSuccessfulComm — so it trips on an
+        # UNCHANGED VALUE rather than on silence. A quiet override here therefore
+        # relaxes a slightly different failure mode than on the other two paths.
         last = dev.lastChanged
         if last is None:
             return True, "lastChanged=None"
+        thresh, quiet = self._threshold_for(dev, self.ecowitt_hours)
+        if thresh is None:
+            return False, ""
         hours = self._hours_since(last)
-        return hours > self.ecowitt_hours, f"lastChanged {hours:.1f}h ago (threshold {self.ecowitt_hours}h)"
+        note  = " — quiet device" if quiet else ""
+        return hours > thresh, f"lastChanged {hours:.1f}h ago (threshold {thresh:g}h{note})"
 
     # ------------------------------------------------------------------
     # Exclusion file (device-level scan)
@@ -419,6 +719,63 @@ class Plugin(indigo.PluginBase):
             log(f"Failed to save exclusions: {e}", level="ERROR")
 
     # ------------------------------------------------------------------
+    # Quiet devices (per-device staleness thresholds)
+    # ------------------------------------------------------------------
+
+    def _threshold_for(self, dev, default_hours):
+        """(threshold_hours, overridden) for this device. None hours = never."""
+        return resolve_quiet_hours(dev.id, dev.name, default_hours,
+                                   self.quiet_by_id, self.quiet_by_name)
+
+    def _load_quiet_devices(self):
+        try:
+            if not os.path.exists(QUIET_DEVICES_FILE):
+                self.quiet_by_id, self.quiet_by_name = {}, {}
+                self._write_quiet_devices()
+                return
+            with open(QUIET_DEVICES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            by_id, by_name, problems = parse_quiet_devices(data)
+            self.quiet_by_id, self.quiet_by_name = by_id, by_name
+            for problem in problems:
+                log(f"Quiet devices: skipped a bad entry — {problem}", level="WARNING")
+            if self.debug:
+                log(f"Loaded {len(by_id) + len(by_name)} quiet device(s) from file")
+        except Exception as e:
+            # Fail OPEN: with no overrides every device is judged on the normal
+            # thresholds, so a broken file costs noise, never a missed outage.
+            log(f"Failed to load quiet devices file: {e}", level="ERROR")
+            self.quiet_by_id, self.quiet_by_name = {}, {}
+
+    def _write_quiet_devices(self):
+        """Seed the file once, when it is absent. Never rewritten afterwards —
+        there is no code-side list to reconcile against, so a rewrite could only
+        lose the user's own entries."""
+        try:
+            os.makedirs(os.path.dirname(QUIET_DEVICES_FILE), exist_ok=True)
+            doc = {
+                "_comment":  "Device Health Monitor — devices that are silent BY DESIGN.",
+                "_comment2": "Each entry takes 'id' (preferred) or 'name', plus 'hours'. "
+                             "'hours' replaces the protocol default staleness threshold for "
+                             "that device only, and may be higher OR lower than the default. "
+                             "Use \"never\" to never alert on silence at all.",
+                "_comment3": "A HARD FAULT still alerts either way — errorState, "
+                             "availability=offline, deviceOnline=False. To ignore a device "
+                             "completely instead, list it in exclusions.json.",
+                "_comment4": "Reloaded every scan cycle, so edits take effect without a "
+                             "plugin restart. 'Show Quiet Devices' lists what is in force.",
+                "_example":  QUIET_DEVICES_EXAMPLE,
+                "quiet_devices": [],
+            }
+            with open(QUIET_DEVICES_FILE, "w", encoding="utf-8") as f:
+                # ensure_ascii=False: this file exists to be hand-edited, and a
+                # wall of — escapes in the guidance text helps nobody.
+                json.dump(doc, f, indent=4, ensure_ascii=False)
+            log(f"Quiet devices: wrote starter file to {QUIET_DEVICES_FILE}")
+        except Exception as e:
+            log(f"Quiet devices: failed to write starter file: {e}", level="ERROR")
+
+    # ------------------------------------------------------------------
     # Pushover
     # ------------------------------------------------------------------
 
@@ -440,13 +797,19 @@ class Plugin(indigo.PluginBase):
             return False
 
     def _alert_pushover(self, offline_list):
+        """Send one consolidated alert. Returns True only if it was DELIVERED.
+
+        The caller latches on that bool, so this must never report success it
+        did not achieve.
+        """
         body  = "\n".join(f"- {name} ({reason})" for name, reason in offline_list)
         title = f"Device Health: {len(offline_list)} offline"
         if self._send_pushover(title, body, priority="0"):
             log(f"Pushover alert sent: {len(offline_list)} device(s) offline")
-        else:
-            for name, reason in offline_list:
-                log(f"[OFFLINE] {name}: {reason}", level="WARNING")
+            return True
+        log(f"NOT DELIVERED — {len(offline_list)} device(s) offline, retrying next scan",
+            level="ERROR")
+        return False
 
     # ==================================================================
     # Plugin Watchdog (auto-discovering)
@@ -466,6 +829,8 @@ class Plugin(indigo.PluginBase):
             if os.path.exists(WATCHDOG_CONFIG_FILE):
                 with open(WATCHDOG_CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                if _as_int(data.get("schema", 0), 0) < WATCHDOG_SCHEMA:
+                    data = self._migrate_watchdog_file(data)
                 for pid, pol in (data.get("overrides") or {}).items():
                     if isinstance(pol, dict):
                         overrides.setdefault(pid, {})
@@ -487,6 +852,37 @@ class Plugin(indigo.PluginBase):
         self.watchdog_exclude            = exclude
         self.watchdog_discovered_default = default
 
+    def _migrate_watchdog_file(self, data):
+        """One-shot reconciliation of a pre-schema config file: back it up, rewrite it.
+
+        Runs only while the file carries no (or an older) schema marker, so it never
+        churns the file on the 10-minute reload — which would otherwise fight anyone
+        editing it in a text editor.
+        """
+        migrated, dropped, kept = migrate_watchdog_config(data, WATCHDOG_V1_BASELINE)
+        migrated.setdefault(
+            "_comment4",
+            "'overrides' now holds only YOUR edits — anything absent uses the plugin's "
+            "current built-in default. 'Show Watchdog Status' lists the policy actually "
+            "in force for every watched plugin.",
+        )
+        try:
+            backup = f"{WATCHDOG_CONFIG_FILE}.bak-v1"
+            if not os.path.exists(backup):
+                shutil.copy2(WATCHDOG_CONFIG_FILE, backup)
+            with open(WATCHDOG_CONFIG_FILE, "w", encoding="utf-8") as f:
+                json.dump(migrated, f, indent=4)
+            log(f"Watchdog: config migrated to schema {WATCHDOG_SCHEMA} — dropped {len(dropped)} "
+                f"untouched default(s), kept {len(kept)} edit(s). Backup: {backup}")
+            if dropped:
+                log(f"Watchdog: current code defaults now apply to {', '.join(dropped)}")
+        except Exception as e:
+            # The reconciliation itself already succeeded in memory, so the right
+            # policy applies this session even if we cannot persist it.
+            log(f"Watchdog: could not rewrite config after migration ({e}) — "
+                f"migrated policy applies for this session only", level="WARNING")
+        return migrated
+
     def _write_watchdog_config(self, overrides, exclude_list, default):
         try:
             os.makedirs(os.path.dirname(WATCHDOG_CONFIG_FILE), exist_ok=True)
@@ -498,6 +894,9 @@ class Plugin(indigo.PluginBase):
                              "'include' un-excludes a code-denylisted plugin. 'discovered_default' is the "
                              "policy for discovered plugins with no override.",
                 "_comment3": f"{CLAUDEBRIDGE_ID} and {self.pluginId} are ALWAYS excluded in code.",
+                # Stamp the schema on a fresh file so it is never put through the
+                # one-shot v1 reconciliation on its next load.
+                "schema":             WATCHDOG_SCHEMA,
                 "overrides":          overrides,
                 "exclude":            exclude_list,
                 "include":            [],
@@ -710,8 +1109,10 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _hours_since(dt):
-        return (datetime.now() - dt).total_seconds() / 3600.0
+    def _hours_since(dt, now=None):
+        """Hours between dt and now. `now` is injectable so the threshold checks
+        can be tested deterministically rather than against the wall clock."""
+        return ((now or datetime.now()) - dt).total_seconds() / 3600.0
 
     # ------------------------------------------------------------------
     # Menu callbacks
@@ -775,6 +1176,29 @@ class Plugin(indigo.PluginBase):
         for name in sorted(self.excluded_names):
             log(f"  {name}")
         log("---")
+        return True
+
+    @staticmethod
+    def _quiet_label(hours):
+        return "never alerts on silence" if hours is None else f"allowed {hours:g}h of silence"
+
+    def menuShowQuietDevices(self, valuesDict=None, typeId=None):
+        self._load_quiet_devices()
+        total = len(self.quiet_by_id) + len(self.quiet_by_name)
+        if not total:
+            log(f"No quiet devices defined. Edit {QUIET_DEVICES_FILE} to give a device "
+                f"that is silent by design a longer threshold of its own.")
+            return True
+        log(f"--- Quiet devices ({total}) --- file: {QUIET_DEVICES_FILE}")
+        for dev_id, hours in sorted(self.quiet_by_id.items()):
+            try:
+                name = indigo.devices[dev_id].name
+            except Exception:
+                name = f"[no device with id {dev_id}]"
+            log(f"  {name} — {self._quiet_label(hours)} (matched by id {dev_id})")
+        for name, hours in sorted(self.quiet_by_name.items()):
+            log(f"  {name} — {self._quiet_label(hours)} (matched by name)")
+        log("--- a hard fault still alerts: errorState, availability=offline, deviceOnline=False ---")
         return True
 
     def menuClearAlertState(self, valuesDict=None, typeId=None):
@@ -846,6 +1270,8 @@ class Plugin(indigo.PluginBase):
                 ("Outstanding alerts:", str(len(self.alerted))),
                 ("Exclusions:",    f"{len(self.excluded_names)} device(s)"),
                 ("Exclusions file:", EXCLUSIONS_FILE),
+                ("Quiet devices:", f"{len(self.quiet_by_id) + len(self.quiet_by_name)} device(s)"),
+                ("Quiet file:",    QUIET_DEVICES_FILE),
                 ("Protocols:",     "Z2M, ShellyDirect, ShellyGen1, Z-Wave, Ecowitt"),
                 ("Watchdog:",      f"{'ON' if self.watchdog_enabled else 'OFF'} "
                                    f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover)"),

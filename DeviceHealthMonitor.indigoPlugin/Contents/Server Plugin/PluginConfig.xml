@@ -21,8 +21,8 @@
     </Field>
 
     <Field id="zwave_mains_hours" type="textfield" defaultValue="6">
-        <Label>Mains device threshold (hours) — not used</Label>
-        <Description>No longer used. Mains Z-Wave health is now judged by Indigo's own errorState, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Description>
+        <Label>Mains device threshold (hours) — RETIRED, changing this does nothing</Label>
+        <Description>Kept only so existing settings are not lost. Nothing reads this value. Mains Z-Wave health is judged by Indigo's own errorState instead, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Description>
     </Field>
 
     <Field id="sep_ecowitt" type="separator"/>
@@ -43,6 +43,14 @@
     <Field id="z2m_stale_hours" type="textfield" defaultValue="12">
         <Label>Z2M device stale threshold (hours)</Label>
         <Description>Device-level alert if a Z2M device has not communicated for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Description>
+    </Field>
+
+    <Field id="sep_quiet" type="separator"/>
+    <Field id="label_quiet" type="label">
+        <Label>Quiet devices — sensors that are silent by design</Label>
+    </Field>
+    <Field id="label_quiet2" type="label">
+        <Label>Some sensors report only when something happens — a cupboard door that opens twice a week is healthy after days of silence, but every threshold above would call it offline. Give any such device a longer threshold of its own in quiet_devices.json (written on first run, in the same folder as the exclusions file). Entries take a device id or name plus a number of hours, or "never". Edits apply on the next scan, with no restart. A hard fault still alerts either way. Use "Show Quiet Devices" to see what is in force.</Label>
     </Field>
 
     <Field id="sep_watchdog" type="separator"/>

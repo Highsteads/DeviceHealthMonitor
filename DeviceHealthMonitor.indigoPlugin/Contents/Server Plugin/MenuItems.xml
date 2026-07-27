@@ -17,6 +17,10 @@
         <Name>Show Exclusions</Name>
         <CallbackMethod>menuShowExclusions</CallbackMethod>
     </MenuItem>
+    <MenuItem id="menuShowQuietDevices">
+        <Name>Show Quiet Devices</Name>
+        <CallbackMethod>menuShowQuietDevices</CallbackMethod>
+    </MenuItem>
     <MenuItem id="menuClearAlertState">
         <Name>Clear Alert State (Reset All)</Name>
         <CallbackMethod>menuClearAlertState</CallbackMethod>
