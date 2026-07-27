@@ -23,7 +23,7 @@ Everything else is ignored by the *device-level* scan above (HomeKit bridges, vi
   is only marked as alerted once the notification has actually been delivered
 - Consolidated Pushover notification (all new offline devices in one message)
 - Alert state persists across plugin restarts
-- "Scan Now", "Show Offline Devices" and "Show Quiet Devices" menu items
+- "Scan Devices Now", "Show Offline/Stale Devices" and "Show Quiet Devices" menu items
 
 ## Quiet devices
 
@@ -69,7 +69,7 @@ Safety:
 - **Dry-run by default** — logs and Pushovers what it *would* restart without acting, until you switch it to live
 - **Pushover on every action**
 
-Tune the policy live (no restart needed) in `~/Documents/Indigo/DeviceHealthMonitor/watchdog_plugins.json`. Menu items: Run Watchdog Check Now, Show Watchdog Status, Toggle Watchdog Dry-Run, Reset Watchdog Restart Counters.
+Tune the policy live (no restart needed) in `~/Documents/Indigo/DeviceHealthMonitor/watchdog_plugins.json`. Menu items: Run Watchdog Check Now, Show Watchdog Status, Toggle Watchdog Dry-Run Mode, Reset Watchdog Restart Counters.
 
 ## Installation
 
@@ -96,6 +96,24 @@ Open Plugin > Device Health Monitor > Configure:
 - **Debug logging** — verbose scan output
 
 Per-device staleness lives in `quiet_devices.json`, not here — see **Quiet devices** above.
+
+## Plugin menu
+
+**Plugins → Device Health Monitor →**
+
+| Menu item | What it does |
+|-----------|--------------|
+| **Scan Devices Now** | Run a full device scan straight away instead of waiting for the next interval. |
+| **Show Offline/Stale Devices** | List every device currently alerting, with how long it has been quiet. A device deleted since it alerted is named as such. |
+| **Add All Offline Devices to Exclusions** | Write the names of everything currently alerting into `exclusions.json` and clear their alerts, so they are left out of future scans. |
+| **Show Exclusions** | List the excluded device names and the file they come from. |
+| **Show Quiet Devices** | Re-read `quiet_devices.json` and list each device with the silence it is allowed, or that it never alerts on silence. |
+| **Clear Alert State (Reset All)** | Forget every outstanding alert so the next scan starts fresh. |
+| **Run Watchdog Check Now** | Re-read `watchdog_plugins.json` and run one watchdog pass immediately. |
+| **Show Watchdog Status** | Dump the full banner, then every discovered plugin with its threshold, its restarts today and any cooldown in force. |
+| **Toggle Watchdog Dry-Run Mode** | Switch between logging what the watchdog would restart and actually restarting it. Logged as a warning either way, because it matters. |
+| **Reset Watchdog Restart Counters** | Clear the per-plugin restart counts and cooldowns. |
+| **Show Plugin Info** | Log the full plugin and environment banner, plus the thresholds, exclusions and watchdog state, for a support post. |
 
 ## Credentials — `IndigoSecrets.py` vs `IndigoSecrets_example.py`
 
