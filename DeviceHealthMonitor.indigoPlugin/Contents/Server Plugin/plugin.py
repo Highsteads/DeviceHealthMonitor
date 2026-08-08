@@ -6,7 +6,15 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5
 # Date:        27-07-2026
-# Version:     2.3.1
+# Version:     2.3.2
+#
+# v2.3.2 (08-08-2026): REQUIRED Info.plist KEY. `CFBundleURLTypes` was PRESENT but
+# EMPTY, so the plugin shipped without the support URL that becomes its
+# "About" menu item — one of the SIX keys the official Developer's Guide lists as
+# required. An empty array satisfies "key exists" while giving users nowhere to go,
+# which is why an earlier sweep that only looked for a MISSING key passed it. Found
+# by an estate check auditing the VALUE rather than the key's presence.
+# No plugin logic changed.
 #
 # v2.3.1 (27-07-2026): a latched alert is now cleared when its device stops being
 # scannable, so the outstanding-alert list can no longer accumulate entries that

@@ -141,6 +141,7 @@ No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
 
+**v2.3.2** — **Added the missing support link.** Every Indigo plugin is meant to carry a web address inside its bundle — it is what the "About" item in the Plugins menu opens. This one had the entry but left it blank, so that menu item went nowhere. It now points at this repository. Nothing else changed.
 **v2.3.1** — a device's alert is now cleared when it stops being scannable, so the
 outstanding list can no longer collect entries that nothing is able to clear: one for a
 device that was deleted, and one for a device excluded by hand-editing `exclusions.json`
