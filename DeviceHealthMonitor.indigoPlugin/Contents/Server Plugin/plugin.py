@@ -5,8 +5,46 @@
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5
-# Date:        27-07-2026
-# Version:     2.3.2
+# Date:        10-08-2026
+# Version:     2.4.0
+#
+# v2.4.0 (10-08-2026): AWAY TOLERANCE — a device may now be switched off BY DESIGN
+# without becoming invisible. Some devices are meant to be off: a washing-machine
+# plug is switched off at the wall between uses, so it is out of contact most of
+# the week. Until now the only way to stop that alerting was exclusions.json, and
+# an exclusion never alerts — so a plug that was off on purpose and a plug that
+# had died looked exactly the same.
+# * That is not hypothetical. On 09-08-2026 a tumble-dryer plug had been dead for
+#   five days, taking appliance cycle detection with it, and nothing said a word,
+#   because it sat on the same exclusion list as the two plugs that are off on
+#   purpose. Two silent deaths were found on that one list in an afternoon — the
+#   other a temperature sensor last heard from 124 days earlier.
+# * The quiet-devices 'hours' knob could not help. It relaxes SILENCE, and a Shelly
+#   that is off reports deviceOnline=False — a hard fault, which alerts however
+#   long the silence threshold is. The two are different questions about one
+#   device, so 'offline_hours' is a second knob in the same file rather than a
+#   reinterpretation of the first.
+# * 'offline_hours' is how long a device may be OUT OF CONTACT before it is
+#   reported. Set it and the plug can be off all week in peace, while a plug that
+#   never comes back is still reported — which an exclusion can never do.
+# * Applied CENTRALLY in _check_device_health, to every protocol and every kind of
+#   verdict, so the rule is one sentence: a device is reported once it has been out
+#   of contact for longer than its own tolerance. Telling a reported fault from a
+#   silence timeout by sniffing the reason string would be the same rule with a
+#   fragile seam down the middle.
+# * THE CLOCK IS lastSuccessfulComm, NOT the moment we first noticed. Our own
+#   notice lives in memory, so a plugin restart would reset it and a dead device
+#   could sit inside a fresh grace period for ever, alerting never — a tolerance
+#   that silently becomes an exclusion is worse than no feature at all. The last
+#   time a device actually spoke cannot be reset by anything the plugin does.
+# * A device that has NEVER communicated is reported straight away however long
+#   the tolerance: there is no start point to measure from, and it is a pairing
+#   fault rather than a plug at a wall. Same call _check_zwave already makes.
+# * 'Show Quiet Devices' lists tolerances alongside quiet devices, and names any
+#   entry pointing at a deleted device — a tolerance protecting nothing is exactly
+#   the sort of thing that goes unnoticed for months otherwise.
+# * 15 tests in tests/test_offline_tolerance.py, all 15 verified failing against
+#   2.3.2. Suite 86 -> 101.
 #
 # v2.3.2 (08-08-2026): REQUIRED Info.plist KEY. `CFBundleURLTypes` was PRESENT but
 # EMPTY, so the plugin shipped without the support URL that becomes its
@@ -158,7 +196,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.3.1"
+PLUGIN_VERSION = "2.4.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -190,6 +228,10 @@ QUIET_DEVICES_EXAMPLE = [
     {"id": 123456789, "name": "Bathroom Cupboard Presence Sensor", "hours": 240,
      "note": "Example only — delete this and add your own. Reports just twice a "
              "week, so 10 days of silence is normal; a flat battery still alerts."},
+    {"id": 987654321, "name": "Washing Machine Plug", "offline_hours": 336,
+     "note": "Example only. Switched off at the wall between uses, so being away "
+             "is normal — but a plug that never comes back is a dead plug, and "
+             "two weeks says so."},
 ]
 
 _QUIET_BAD = object()   # distinct from None, which legitimately means "never"
@@ -227,6 +269,15 @@ def parse_quiet_devices(data):
             problems.append(f"{entry!r} is not an object")
             continue
         label = entry.get("name") or entry.get("id")
+        # 'hours' became OPTIONAL in v2.4.0, when 'offline_hours' joined it in this
+        # file. An entry carrying only a tolerance is a perfectly good entry and
+        # must pass through here in silence — treating its absent 'hours' as a
+        # malformed value logged a WARNING on every load about a correct file.
+        # An entry with NEITHER key does nothing at all, so that IS worth saying.
+        if entry.get("hours") in (None, ""):
+            if entry.get("offline_hours") in (None, ""):
+                problems.append(f"{label!r} sets neither 'hours' nor 'offline_hours'")
+            continue
         hours = _quiet_hours(entry.get("hours"))
         if hours is _QUIET_BAD:
             problems.append(f"{label!r}: bad 'hours' value {entry.get('hours')!r}")
@@ -243,6 +294,63 @@ def parse_quiet_devices(data):
         else:
             problems.append(f"{entry!r} has neither 'id' nor 'name'")
     return by_id, by_name, problems
+
+
+def parse_offline_tolerance(data):
+    """Parse the optional 'offline_hours' on each quiet-devices entry.
+
+    Returns (by_id, by_name, problems), same two-map shape and same reasoning as
+    parse_quiet_devices — see that docstring for why ids and names are kept apart.
+
+    A SEPARATE function reading the SAME file on purpose. 'hours' relaxes SILENCE;
+    'offline_hours' relaxes BEING AWAY, whatever the signal. Two different
+    questions about one device, so they get two knobs and two parsers, and the
+    existing quiet-hours contract is left exactly as it was.
+
+    Entries with no 'offline_hours' are skipped and appear in neither map, which
+    is what keeps the default behaviour — alert as soon as the device is reported
+    away — for every device nobody has said otherwise about.
+    """
+    by_id, by_name, problems = {}, {}, []
+    for entry in (data.get("quiet_devices") or []):
+        if not isinstance(entry, dict) or entry.get("offline_hours") in (None, ""):
+            continue
+        label = entry.get("name") or entry.get("id")
+        hours = _quiet_hours(entry.get("offline_hours"))
+        if hours is _QUIET_BAD:
+            problems.append(
+                f"{label!r}: bad 'offline_hours' value {entry.get('offline_hours')!r}")
+            continue
+        if entry.get("id") not in (None, ""):
+            try:
+                by_id[int(entry["id"])] = hours
+            except (TypeError, ValueError):
+                problems.append(f"{label!r}: bad 'id' value {entry['id']!r}")
+            continue
+        name = str(entry.get("name") or "").strip().lower()
+        if name:
+            by_name[name] = hours
+        else:
+            problems.append(f"{entry!r} has neither 'id' nor 'name'")
+    return by_id, by_name, problems
+
+
+def resolve_offline_tolerance(dev_id, dev_name, by_id, by_name):
+    """How long this device may be out of contact before it counts as a fault.
+
+    Returns (hours, configured). `configured` False means nobody has said anything
+    about this device, so the answer is the long-standing one: report it the moment
+    it is seen to be away. hours None (from "never") means tolerate indefinitely.
+
+    Id wins over name, matching resolve_quiet_hours — a name can be edited in the
+    Indigo UI at any time, an id cannot.
+    """
+    if dev_id in by_id:
+        return by_id[dev_id], True
+    key = str(dev_name or "").strip().lower()
+    if key in by_name:
+        return by_name[key], True
+    return 0.0, False
 
 
 def resolve_quiet_hours(dev_id, dev_name, default_hours, by_id, by_name):
@@ -470,6 +578,12 @@ class Plugin(indigo.PluginBase):
         # silent BY DESIGN (a cupboard door opened twice a week).
         self.quiet_by_id: dict[int, float | None]   = {}
         self.quiet_by_name: dict[str, float | None] = {}
+        # Away tolerance — how long a device may be OUT OF CONTACT before it counts
+        # as a fault (a plug switched off at the wall between uses). Same file,
+        # different question: 'hours' relaxes silence, 'offline_hours' relaxes
+        # absence. Empty maps mean the original behaviour everywhere.
+        self.offline_tol_by_id: dict[int, float | None]   = {}
+        self.offline_tol_by_name: dict[str, float | None] = {}
         self._load_quiet_devices()
 
         # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool}
@@ -513,7 +627,8 @@ class Plugin(indigo.PluginBase):
             f"watchdog {'ON' if self.watchdog_enabled else 'OFF'} "
             f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover, "
             f"{len(self.watchdog_exclude)} excluded), {len(self.excluded_names)} device exclusion(s), "
-            f"{len(self.quiet_by_id) + len(self.quiet_by_name)} quiet device(s)")
+            f"{len(self.quiet_by_id) + len(self.quiet_by_name)} quiet device(s), "
+            f"{len(self.offline_tol_by_id) + len(self.offline_tol_by_name)} away tolerance(s)")
 
     def shutdown(self):
         self._persist_alerted()
@@ -622,17 +737,55 @@ class Plugin(indigo.PluginBase):
 
         try:
             if protocol == "z2m":
-                return self._check_z2m(dev)
-            if protocol == "shelly":
-                return self._check_shelly(dev)
-            if protocol == "zwave":
-                return self._check_zwave(dev)
-            if protocol == "ecowitt":
-                return self._check_ecowitt(dev)
+                offline, reason = self._check_z2m(dev)
+            elif protocol == "shelly":
+                offline, reason = self._check_shelly(dev)
+            elif protocol == "zwave":
+                offline, reason = self._check_zwave(dev)
+            elif protocol == "ecowitt":
+                offline, reason = self._check_ecowitt(dev)
+            else:
+                return None, None
+            if offline:
+                offline, reason = self._apply_offline_tolerance(dev, reason)
+            return offline, reason
         except Exception as e:
             log(f"Error checking {dev.name}: {e}", level="ERROR")
 
         return None, None
+
+    def _apply_offline_tolerance(self, dev, reason):
+        """Hold back a verdict for a device that is allowed to be away a while.
+
+        Applied CENTRALLY, to every protocol and every kind of verdict, so the rule
+        reads as one sentence: a device is reported unhealthy once it has been out
+        of contact for longer than its own tolerance. Sniffing the reason string to
+        tell a reported fault from a silence timeout would be the same rule with a
+        fragile seam down the middle.
+
+        The clock is lastSuccessfulComm, NOT the moment we first noticed. That
+        matters: our own notice is in memory, so a plugin restart would reset it and
+        a device could sit inside a fresh grace period for ever, alerting never. The
+        last time it actually spoke cannot be reset by anything we do.
+
+        A device that has NEVER communicated is reported straight away however long
+        the tolerance. There is no start point to measure from, and a device that
+        has not once spoken is a pairing fault rather than a plug at the wall — the
+        same call _check_zwave already makes for a battery node.
+        """
+        tol, configured = resolve_offline_tolerance(
+            dev.id, dev.name, self.offline_tol_by_id, self.offline_tol_by_name)
+        if not configured:
+            return True, reason
+        if tol is None:
+            return False, ""
+        last = dev.lastSuccessfulComm
+        if last is None:
+            return True, f"{reason} — never communicated, so the away tolerance cannot apply"
+        away = self._hours_since(last)
+        if away <= tol:
+            return False, ""
+        return True, f"{reason}; away {away:.1f}h (tolerance {tol:g}h)"
 
     def _check_z2m(self, dev):
         # Trust comm freshness over the availability state: availability can sit
@@ -758,21 +911,28 @@ class Plugin(indigo.PluginBase):
         try:
             if not os.path.exists(QUIET_DEVICES_FILE):
                 self.quiet_by_id, self.quiet_by_name = {}, {}
+                self.offline_tol_by_id, self.offline_tol_by_name = {}, {}
                 self._write_quiet_devices()
                 return
             with open(QUIET_DEVICES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             by_id, by_name, problems = parse_quiet_devices(data)
             self.quiet_by_id, self.quiet_by_name = by_id, by_name
+            off_id, off_name, off_problems = parse_offline_tolerance(data)
+            self.offline_tol_by_id, self.offline_tol_by_name = off_id, off_name
             for problem in problems:
                 log(f"Quiet devices: skipped a bad entry — {problem}", level="WARNING")
+            for problem in off_problems:
+                log(f"Away tolerance: skipped a bad entry — {problem}", level="WARNING")
             if self.debug:
-                log(f"Loaded {len(by_id) + len(by_name)} quiet device(s) from file")
+                log(f"Loaded {len(by_id) + len(by_name)} quiet device(s) and "
+                    f"{len(off_id) + len(off_name)} away tolerance(s) from file")
         except Exception as e:
             # Fail OPEN: with no overrides every device is judged on the normal
             # thresholds, so a broken file costs noise, never a missed outage.
             log(f"Failed to load quiet devices file: {e}", level="ERROR")
             self.quiet_by_id, self.quiet_by_name = {}, {}
+            self.offline_tol_by_id, self.offline_tol_by_name = {}, {}
 
     def _write_quiet_devices(self):
         """Seed the file once, when it is absent. Never rewritten afterwards —
@@ -782,13 +942,21 @@ class Plugin(indigo.PluginBase):
             os.makedirs(os.path.dirname(QUIET_DEVICES_FILE), exist_ok=True)
             doc = {
                 "_comment":  "Device Health Monitor — devices that are silent BY DESIGN.",
-                "_comment2": "Each entry takes 'id' (preferred) or 'name', plus 'hours'. "
-                             "'hours' replaces the protocol default staleness threshold for "
-                             "that device only, and may be higher OR lower than the default. "
-                             "Use \"never\" to never alert on silence at all.",
-                "_comment3": "A HARD FAULT still alerts either way — errorState, "
-                             "availability=offline, deviceOnline=False. To ignore a device "
+                "_comment2": "Each entry takes 'id' (preferred) or 'name', then 'hours' or "
+                             "'offline_hours' or both. 'hours' replaces the protocol default "
+                             "staleness threshold for that device only, and may be higher OR "
+                             "lower than the default. Use \"never\" for either to switch that "
+                             "check off entirely for the device.",
+                "_comment3": "'offline_hours' is for a device that is switched off BY DESIGN, "
+                             "such as a washing-machine plug turned off at the wall between "
+                             "uses. It is how long the device may be out of contact before it "
+                             "is reported — measured from its last successful communication, "
+                             "so a plugin restart cannot reset the clock. Without it a device "
+                             "is reported the moment it is seen to be away. To ignore a device "
                              "completely instead, list it in exclusions.json.",
+                "_comment5": "A device that has NEVER communicated is reported straight away "
+                             "however long its tolerance: there is no start point to measure "
+                             "from, and it is a pairing fault rather than a plug at the wall.",
                 "_comment4": "Reloaded every scan cycle, so edits take effect without a "
                              "plugin restart. 'Show Quiet Devices' lists what is in force.",
                 "_example":  QUIET_DEVICES_EXAMPLE,
@@ -1212,21 +1380,52 @@ class Plugin(indigo.PluginBase):
     def menuShowQuietDevices(self, valuesDict=None, typeId=None):
         self._load_quiet_devices()
         total = len(self.quiet_by_id) + len(self.quiet_by_name)
-        if not total:
-            log(f"No quiet devices defined. Edit {QUIET_DEVICES_FILE} to give a device "
-                f"that is silent by design a longer threshold of its own.")
+        tol_total = len(self.offline_tol_by_id) + len(self.offline_tol_by_name)
+        if not total and not tol_total:
+            log(f"No quiet devices or away tolerances defined. Edit {QUIET_DEVICES_FILE} "
+                f"to give a device that is silent by design a longer threshold of its "
+                f"own, or one that is switched off by design an away tolerance.")
             return True
-        log(f"--- Quiet devices ({total}) --- file: {QUIET_DEVICES_FILE}")
-        for dev_id, hours in sorted(self.quiet_by_id.items()):
-            try:
-                name = indigo.devices[dev_id].name
-            except Exception:
-                name = f"[no device with id {dev_id}]"
-            log(f"  {name} — {self._quiet_label(hours)} (matched by id {dev_id})")
-        for name, hours in sorted(self.quiet_by_name.items()):
-            log(f"  {name} — {self._quiet_label(hours)} (matched by name)")
-        log("--- a hard fault still alerts: errorState, availability=offline, deviceOnline=False ---")
+
+        if total:
+            log(f"--- Quiet devices ({total}) — allowed to be SILENT --- file: {QUIET_DEVICES_FILE}")
+            for dev_id, hours in sorted(self.quiet_by_id.items()):
+                log(f"  {self._device_label(dev_id)} — {self._quiet_label(hours)} "
+                    f"(matched by id {dev_id})")
+            for name, hours in sorted(self.quiet_by_name.items()):
+                log(f"  {name} — {self._quiet_label(hours)} (matched by name)")
+
+        if tol_total:
+            log(f"--- Away tolerances ({tol_total}) — allowed to be OFF ---")
+            for dev_id, hours in sorted(self.offline_tol_by_id.items()):
+                log(f"  {self._device_label(dev_id)} — {self._tolerance_label(hours)} "
+                    f"(matched by id {dev_id})")
+            for name, hours in sorted(self.offline_tol_by_name.items()):
+                log(f"  {name} — {self._tolerance_label(hours)} (matched by name)")
+
+        log("--- a device with no away tolerance is still reported the moment it is "
+            "seen to be away: errorState, availability=offline, deviceOnline=False ---")
         return True
+
+    @staticmethod
+    def _device_label(dev_id):
+        """Device name for a configured id, or a plain statement that it is gone.
+
+        A tolerance pointing at a deleted device protects nothing, and saying so
+        here is the only place anyone would find out.
+        """
+        try:
+            return indigo.devices[dev_id].name
+        except Exception:
+            return f"[no device with id {dev_id}]"
+
+    @staticmethod
+    def _tolerance_label(hours):
+        if hours is None:
+            return "never reported while away"
+        if hours >= 48:
+            return f"reported after {hours / 24:g} days away"
+        return f"reported after {hours:g}h away"
 
     def menuClearAlertState(self, valuesDict=None, typeId=None):
         count = len(self.alerted)
@@ -1298,6 +1497,8 @@ class Plugin(indigo.PluginBase):
                 ("Exclusions:",    f"{len(self.excluded_names)} device(s)"),
                 ("Exclusions file:", EXCLUSIONS_FILE),
                 ("Quiet devices:", f"{len(self.quiet_by_id) + len(self.quiet_by_name)} device(s)"),
+                ("Away tolerances:",
+                 f"{len(self.offline_tol_by_id) + len(self.offline_tol_by_name)} device(s)"),
                 ("Quiet file:",    QUIET_DEVICES_FILE),
                 ("Protocols:",     "Z2M, ShellyDirect, ShellyGen1, Z-Wave, Ecowitt"),
                 ("Watchdog:",      f"{'ON' if self.watchdog_enabled else 'OFF'} "
