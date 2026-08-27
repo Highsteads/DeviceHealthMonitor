@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5
 # Date:        10-08-2026
-# Version:     2.4.0
+# Version:     2.5.0
 #
 # v2.4.0 (10-08-2026): AWAY TOLERANCE — a device may now be switched off BY DESIGN
 # without becoming invisible. Some devices are meant to be off: a washing-machine
@@ -126,6 +126,18 @@
 # that plugin has been uninstalled and deleted, so the tuned threshold referenced
 # a plugin that no longer exists (harmless dead entry; removed for tidiness).
 #
+# v2.5.0 (27-08-2026): staleness is no longer applied to plugins whose devices
+# have NO INBOUND PATH. A stale_minutes of None now means "judge this plugin on
+# crashed only" — its devices cannot report in, so silence carries no information
+# about health. Broadlink RF is the case that forced it: its devices are RF
+# TRANSMITTERS, lastSuccessfulComm only moves when a code is sent, so a night
+# where nobody touched the fire read as a 70-minute wedge. The watchdog restarted
+# a perfectly healthy 18 MB plugin three times, hit its daily cap, then paged at
+# 23:58 and again at 03:38. Humax Aura had the same problem and was papered over
+# with stale_minutes 1440; that is now None too, so the intent is stated rather
+# than hidden in a magic number. Crashed-detection still applies to both — this
+# stops false wedges, it does not stop watching them.
+#
 # v2.1 (19-06-2026): tightened the EcoFlow Cloud wedged threshold 720->60 min.
 # EcoFlow Cloud v1.8+ now actively polls each device every ~10s (River 3 / Delta 3
 # don't stream passively), so lastSuccessfulComm stays fresh and a 60-min gap is a
@@ -196,7 +208,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.4.0"
+PLUGIN_VERSION = "2.5.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -390,6 +402,12 @@ POST_RESTART_GRACE_MIN = 5
 
 # Tuned per-plugin thresholds (applied to discovered plugins whose cadence we know).
 #   stale_minutes / cooldown_minutes / max_per_day / enabled
+#
+# stale_minutes = None means TRANSMIT-ONLY: the plugin's devices have no inbound
+# path, so lastSuccessfulComm only advances when we command them and its age says
+# nothing about the plugin's health. Such a plugin is judged on crashed only.
+# Do NOT use a large number for this — a threshold implies silence eventually
+# means something, and for these devices it never does.
 WATCHDOG_OVERRIDES = {
     "com.clives.indigoplugin.z2mbridge":                {"stale_minutes": 5,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
     "com.clives.indigoplugin.tasmotabridge":            {"stale_minutes": 8,   "cooldown_minutes": 15, "max_per_day": 6, "enabled": True},
@@ -405,9 +423,11 @@ WATCHDOG_OVERRIDES = {
     "com.clives.indigoplugin.shellydirect":             {"stale_minutes": 15,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     # ShellyGen1 is known HTTP-flaky — long threshold + low cap so we don't thrash it.
     "com.clives.indigoplugin.shellyg1":                 {"stale_minutes": 30,  "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
-    # Humax Aura (TV) only comms when in use — staleness is not a wedge signal, so this is
-    # effectively crashed-only (24h threshold) to avoid nuisance restarts when the TV is off.
-    "com.clives.indigoplugin.humaxaura":                {"stale_minutes": 1440, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+    # Humax Aura (TV) only comms when in use — staleness is not a wedge signal.
+    "com.clives.indigoplugin.humaxaura":                {"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+    # Broadlink RF devices are TRANSMITTERS. The fire, the blinds and anything else
+    # they drive send nothing back, so lastSuccessfulComm moves only when we transmit.
+    "com.clives.indigoplugin.broadlinkrf":              {"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
 }
 
 # Never auto-restart these. ClaudeBridge (MCP channel) and this plugin are added in
@@ -1167,12 +1187,19 @@ class Plugin(indigo.PluginBase):
         if not wrapper.isRunning():
             return "crashed", "enabled but not running"
 
+        # Transmit-only: these devices cannot report in, so the age of their last
+        # comm measures how long since WE last spoke to them, not their health.
+        # Judging it would restart a working plugin for being quiet.
+        stale_raw = policy.get("stale_minutes", self.watchdog_discovered_stale)
+        if stale_raw is None:
+            return "ok", "transmit-only — staleness is not a health signal"
+
         comms = [d.lastSuccessfulComm for d in devs if d.lastSuccessfulComm is not None]
         if not comms:
             return "ok", "no comm timestamps to assess"
         newest  = max(comms)
         age_min = (now - newest).total_seconds() / 60.0
-        stale   = float(policy.get("stale_minutes", self.watchdog_discovered_stale))
+        stale   = float(stale_raw)
         if age_min > stale:
             return "wedged", (f"newest of {len(devs)} device(s) last comm "
                               f"{age_min:.0f}m ago (threshold {stale:.0f}m)")
@@ -1468,7 +1495,9 @@ class Plugin(indigo.PluginBase):
             if rec.get("last_restart"):
                 extra = f" | last restart {rec['last_restart']}, {rec.get('restarts_today', 0)} today"
             lvl = "WARNING" if verdict in ("crashed", "wedged") else "INFO"
-            log(f"  {self._plugin_label(pid)}: {verdict} [{src} {policy.get('stale_minutes')}m] "
+            _sm = policy.get('stale_minutes')
+            _sm = "transmit-only" if _sm is None else f"{_sm}m"
+            log(f"  {self._plugin_label(pid)}: {verdict} [{src} {_sm}] "
                 f"({reason}){extra}", level=lvl)
         log(f"--- {len(self.watchdog_exclude)} excluded | config: {WATCHDOG_CONFIG_FILE} ---")
         return True
