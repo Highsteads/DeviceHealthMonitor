@@ -1,5 +1,7 @@
 # Device Health Monitor
 
+**Version:** 2.5.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
 ## What It Monitors
@@ -140,6 +142,16 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.5.1** — **Tuned the watchdog for DahuaEvents.** Its cameras only speak when something
+happens — a detection, or a change in the stream itself — so a quiet night with nobody about
+can go well past an hour without a word, even with every stream open and healthy. The watchdog
+had no tuned threshold for it and fell back to the generic sixty minutes, so three quiet
+overnight hours cost three restarts and a "needs manual attention" page for cameras that
+answered within a tenth of a second when checked by hand. The threshold is now four hours,
+which clears the longest quiet spell seen so far with room to spare. A genuine fault still
+shows up well inside a minute, so nothing is going unwatched — only the silent-and-healthy
+case was being read wrong.
 
 **v2.5.0** — **A plugin that only ever talks outwards is no longer judged on how long it has been quiet.** Some devices have no way of answering back. The RF transmitter that drives the living-room fire sends commands and hears nothing, so the only thing the clock measures is how long since *we* last spoke to *it* — which on a night nobody touched the fire read as a seventy-minute fault. The watchdog restarted a perfectly healthy plugin three times, ran out of its daily allowance, and woke the house at two minutes to midnight and again at twenty to four. Setting `stale_minutes` to nothing at all now means exactly that: watch this plugin for crashes, but never for silence. Humax Aura had the same problem and had been quietly papered over with a tolerance of a full day, which only ever delayed the same wrong answer — it is stated properly now. Crash detection still applies to both, so nothing stops being watched. Eight tests drive the real assessment, including the overnight case that caused this and a crashed transmit-only plugin still being caught.
 

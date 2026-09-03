@@ -4,9 +4,38 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Opus 5
-# Date:        10-08-2026
-# Version:     2.5.0
+# Author:      CliveS & Claude Sonnet 5
+# Date:        03-09-2026
+# Version:     2.5.1
+#
+# v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
+# 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
+# advances on a detection or a stream status CHANGE, not on continued healthy
+# silence, so a quiet night with nobody about routinely produced 70min+ gaps with
+# every camera reachable and every stream healthy. Live-measured 03-09-2026: three
+# false "wedged" restarts overnight (02:19, 03:29), capped out at "needs manual
+# attention" at 04:39 for cameras that all answered in under 100ms when checked by
+# hand. A genuine fault (dead heartbeat, camera-closed-stream) still logs a
+# RECONNECTING warning within a minute — this only stops the SILENT-and-healthy
+# case being misread as a wedge. 240 min clears the longest quiet gap seen so far
+# (3h18m, 02-Sep) with margin. The other half of this fix — DahuaEvents itself
+# periodically re-affirming CONNECTED so lastSuccessfulComm stays a true health
+# signal — is a separate change to that plugin, filed in its own
+# TRIAGE_QUEUE.md entry (Perceptive Automation project root).
+# (This entry was also mis-filed out of date order in the block below as v2.5.0 —
+# moved here, no content changed, while touching this file for the same reason.)
+#
+# v2.5.0 (27-08-2026): staleness is no longer applied to plugins whose devices
+# have NO INBOUND PATH. A stale_minutes of None now means "judge this plugin on
+# crashed only" — its devices cannot report in, so silence carries no information
+# about health. Broadlink RF is the case that forced it: its devices are RF
+# TRANSMITTERS, lastSuccessfulComm only moves when a code is sent, so a night
+# where nobody touched the fire read as a 70-minute wedge. The watchdog restarted
+# a perfectly healthy 18 MB plugin three times, hit its daily cap, then paged at
+# 23:58 and again at 03:38. Humax Aura had the same problem and was papered over
+# with stale_minutes 1440; that is now None too, so the intent is stated rather
+# than hidden in a magic number. Crashed-detection still applies to both — this
+# stops false wedges, it does not stop watching them.
 #
 # v2.4.0 (10-08-2026): AWAY TOLERANCE — a device may now be switched off BY DESIGN
 # without becoming invisible. Some devices are meant to be off: a washing-machine
@@ -126,18 +155,6 @@
 # that plugin has been uninstalled and deleted, so the tuned threshold referenced
 # a plugin that no longer exists (harmless dead entry; removed for tidiness).
 #
-# v2.5.0 (27-08-2026): staleness is no longer applied to plugins whose devices
-# have NO INBOUND PATH. A stale_minutes of None now means "judge this plugin on
-# crashed only" — its devices cannot report in, so silence carries no information
-# about health. Broadlink RF is the case that forced it: its devices are RF
-# TRANSMITTERS, lastSuccessfulComm only moves when a code is sent, so a night
-# where nobody touched the fire read as a 70-minute wedge. The watchdog restarted
-# a perfectly healthy 18 MB plugin three times, hit its daily cap, then paged at
-# 23:58 and again at 03:38. Humax Aura had the same problem and was papered over
-# with stale_minutes 1440; that is now None too, so the intent is stated rather
-# than hidden in a magic number. Crashed-detection still applies to both — this
-# stops false wedges, it does not stop watching them.
-#
 # v2.1 (19-06-2026): tightened the EcoFlow Cloud wedged threshold 720->60 min.
 # EcoFlow Cloud v1.8+ now actively polls each device every ~10s (River 3 / Delta 3
 # don't stream passively), so lastSuccessfulComm stays fresh and a 60-min gap is a
@@ -208,7 +225,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.5.0"
+PLUGIN_VERSION = "2.5.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -420,6 +437,17 @@ WATCHDOG_OVERRIDES = {
     "com.clives.indigoplugin.ecowitt":                  {"stale_minutes": 20,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     # RAMSES TRVs report infrequently (esp. summer, heating off) — lenient threshold.
     "uk.co.clives.ramses.esp":                          {"stale_minutes": 180, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
+    # DahuaEvents' lastSuccessfulComm only advances on a detection or a stream
+    # status CHANGE, not on continued healthy silence (dahua_worker.py's CameraWorker
+    # confirms CONNECTED once, at stream-open, and never re-affirms it). A quiet
+    # night with nobody about routinely produces 70min+ gaps with the stream fully
+    # healthy — live-measured 03-Sep-2026: three false "wedged" restarts overnight,
+    # capping out at "needs manual attention" for cameras that answered instantly
+    # when checked. Genuine faults (dead heartbeat, camera-closed-stream) DO log a
+    # RECONNECTING warning well inside a minute, so this plugin is not going blind —
+    # it is only the SILENT-and-healthy case being tightened here. 240 min clears
+    # the longest quiet gap seen so far (3h18m, 02-Sep) with margin.
+    "com.clives.indigoplugin.dahuaevents":               {"stale_minutes": 240, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     "com.clives.indigoplugin.shellydirect":             {"stale_minutes": 15,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True},
     # ShellyGen1 is known HTTP-flaky — long threshold + low cap so we don't thrash it.
     "com.clives.indigoplugin.shellyg1":                 {"stale_minutes": 30,  "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
