@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.5.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.5.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -143,6 +143,8 @@ No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
 
+
+**v2.5.2** - **The settings dialog was stretched wider than its own window, so the help text beside each setting was cut off mid-sentence.** The short help that can be attached to a setting is drawn on a single line and never wraps, so the longest one decides how wide every row is — and the window cannot be widened past a fixed maximum. All five long ones have moved into ordinary description paragraphs, which do wrap. Two new checks fail the build if any help text or setting label grows long enough to do it again. No setting or behaviour changed.
 **v2.5.1** — **Tuned the watchdog for DahuaEvents.** Its cameras only speak when something
 happens — a detection, or a change in the stream itself — so a quiet night with nobody about
 can go well past an hour without a word, even with every stream open and healthy. The watchdog

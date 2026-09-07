@@ -22,7 +22,9 @@
 
     <Field id="zwave_mains_hours" type="textfield" defaultValue="6">
         <Label>Mains device threshold (hours) — RETIRED, changing this does nothing</Label>
-        <Description>Kept only so existing settings are not lost. Nothing reads this value. Mains Z-Wave health is judged by Indigo's own errorState instead, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Description>
+    </Field>
+    <Field id="label_zwave_mains_hours_info" type="label">
+        <Label>Kept only so existing settings are not lost. Nothing reads this value. Mains Z-Wave health is judged by Indigo's own errorState instead, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Label>
     </Field>
 
     <Field id="sep_ecowitt" type="separator"/>
@@ -32,7 +34,9 @@
 
     <Field id="ecowitt_hours" type="textfield" defaultValue="24">
         <Label>Ecowitt state-change threshold (hours)</Label>
-        <Description>Alert if an Ecowitt device has had no state change for this many hours (uses lastChanged as a proxy).</Description>
+    </Field>
+    <Field id="label_ecowitt_hours_info" type="label">
+        <Label>Alert if an Ecowitt device has had no state change for this many hours (uses lastChanged as a proxy).</Label>
     </Field>
 
     <Field id="sep_z2m" type="separator"/>
@@ -42,7 +46,9 @@
 
     <Field id="z2m_stale_hours" type="textfield" defaultValue="12">
         <Label>Z2M device stale threshold (hours)</Label>
-        <Description>Device-level alert if a Z2M device has not communicated for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Description>
+    </Field>
+    <Field id="label_z2m_stale_hours_info" type="label">
+        <Label>Device-level alert if a Z2M device has not communicated for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Label>
     </Field>
 
     <Field id="sep_quiet" type="separator"/>
@@ -67,12 +73,16 @@
 
     <Field id="watchdogDryRun" type="checkbox" defaultValue="true">
         <Label>Dry-run (log/alert only, no real restarts)</Label>
-        <Description>Leave ticked until you have watched a few cycles and confirmed the detections look right, then untick to allow real restarts.</Description>
+    </Field>
+    <Field id="label_watchdogDryRun_info" type="label">
+        <Label>Leave ticked until you have watched a few cycles and confirmed the detections look right, then untick to allow real restarts.</Label>
     </Field>
 
     <Field id="watchdogDefaultStaleMin" type="textfield" defaultValue="60">
         <Label>Auto-discovered default stale threshold (minutes)</Label>
-        <Description>Wedge threshold for auto-discovered plugins that have no tuned override. Generous by default so a newly-seen plugin is never nuisance-restarted; tune individual plugins in watchdog_plugins.json.</Description>
+    </Field>
+    <Field id="label_watchdogDefaultStaleMin_info" type="label">
+        <Label>Wedge threshold for auto-discovered plugins that have no tuned override. Generous by default so a newly-seen plugin is never nuisance-restarted; tune individual plugins in watchdog_plugins.json.</Label>
     </Field>
 
     <Field id="sep_debug" type="separator"/>
