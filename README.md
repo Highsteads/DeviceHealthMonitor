@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.7.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.7.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -142,6 +142,9 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.7.1** - **A device that ignores the new check is asked three times, then left alone.** Two loft repeater endpoints answer a status request with "does not support status request command" - as a logged error rather than a refusal the plugin can catch, and both claim to support it, so neither the exception nor the capability flag helps. Left as it was, that would have been two errors every few hours for ever, in a log the error watch reads and sends notifications about. The plugin now notices that a request achieved nothing, counts three of them, and stops asking. A node that ever does answer starts again from zero.
+
 
 **v2.7.0** - **A mains Z-Wave device that has quietly died is finally noticed.** Three of them had been off the network for 91, 231 and 629 days without a single word from this plugin. Silence was never going to find them, and the check was right not to try: a light or a repeater that nobody has commanded is legitimately quiet for months, and measurement on 9 September put the healthy and the dead completely interleaved, from three months of silence to two years. No threshold separates those.
 

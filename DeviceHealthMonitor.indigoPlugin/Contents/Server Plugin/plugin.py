@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        03-09-2026
-# Version:     2.7.0
+# Version:     2.7.1
 #
 # v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
 # 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
@@ -226,7 +226,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.7.0"
+PLUGIN_VERSION = "2.7.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -813,6 +813,34 @@ class Plugin(indigo.PluginBase):
 
         return None, None
 
+    # A node that answers three probes with nothing at all is not going to start.
+    MAX_FRUITLESS_PROBES = 3
+
+    @staticmethod
+    def zwave_probe_strikes(previous_strikes, comm_at_probe, comm_now):
+        """Fruitless probes in a row for this node.
+
+        A status request that LANDS makes the device reply, which moves
+        lastSuccessfulComm. If it has not moved, the probe went nowhere.
+
+        That matters because Indigo refuses some devices outright — 09-09-2026,
+        both Loft Repeater endpoints answered the very first probe round with
+        `device "..." does not support status request command`, logged as a
+        Z-Wave ERROR. It is LOGGED, not raised, so it cannot be caught, and
+        `supportsStatusRequest` is True on both, so the capability flag cannot
+        be trusted either. Left alone that is two permanent errors every period
+        in a log Log_Error_Watch reads and pages on — noise this plugin created.
+
+        Counting strikes is the one signal that works, and it self-heals: a
+        node that ever does answer resets to zero and is probed normally again.
+        """
+        if comm_at_probe is None or comm_now != comm_at_probe:
+            return 0
+        try:
+            return int(previous_strikes or 0) + 1
+        except (TypeError, ValueError):
+            return 1
+
     @staticmethod
     def zwave_probe_due(silent_hours, threshold_hours, hours_since_probe):
         """Should this quiet mains Z-Wave node be poked to see if it is there?
@@ -965,16 +993,34 @@ class Plugin(indigo.PluginBase):
             return False                 # already condemned; nothing to learn
         if getattr(dev, "batteryLevel", None) is not None:
             return False                 # battery nodes sleep; a ping proves nothing
+        if getattr(dev, "supportsStatusRequest", True) is False:
+            return False                 # it says it cannot be asked; believe it
+                                         # (it is not sufficient — see the strike
+                                         #  counter; both Loft Repeaters report True
+                                         #  and are refused anyway)
         last = dev.lastSuccessfulComm
         if last is None:
             return False                 # never spoke: a pairing fault, not a quiet node
         now = now or datetime.now()
         silent = self._hours_since(last, now)
-        prev = self._zwave_probed.get(dev.id)
-        since = None if prev is None else self._hours_since(prev, now)
+        prev = self._zwave_probed.get(dev.id)                # (when, comm_then, strikes)
+        when, comm_then, strikes = prev if prev else (None, None, 0)
+        since = None if when is None else self._hours_since(when, now)
         if not self.zwave_probe_due(silent, self.zwave_mains_hours, since):
             return False
-        self._zwave_probed[dev.id] = now
+
+        # Did the LAST probe achieve anything? A landed status request makes the
+        # device reply, which moves lastSuccessfulComm.
+        strikes = self.zwave_probe_strikes(strikes, comm_then, last)
+        if strikes >= self.MAX_FRUITLESS_PROBES:
+            if strikes == self.MAX_FRUITLESS_PROBES:
+                log(f"{dev.name} has ignored {strikes} status requests — not asking "
+                    f"again unless it speaks. Its health is whatever errorState says.",
+                    level="WARNING")
+            self._zwave_probed[dev.id] = (now, last, strikes)
+            return False
+
+        self._zwave_probed[dev.id] = (now, last, strikes)
         try:
             indigo.device.statusRequest(dev.id)
             if self.debug:

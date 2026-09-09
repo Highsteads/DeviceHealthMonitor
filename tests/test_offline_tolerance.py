@@ -518,3 +518,78 @@ def test_a_probe_that_raises_is_not_an_error_for_the_scan(plugin_mod, plugin):
     plugin_mod.indigo.device.raise_on_status = RuntimeError("controller busy")
     host = _host(plugin)
     assert host._probe_quiet_zwave(_ZDev(datetime.now() - timedelta(hours=200))) is False
+
+
+# ── a node that ignores the probe is asked three times, then left ────────────
+# Both Loft Repeater endpoints answered the very first probe round with
+# `does not support status request command`, logged as a Z-Wave ERROR. It is
+# LOGGED, not raised, so it cannot be caught, and supportsStatusRequest is True
+# on both, so the capability flag cannot be trusted. Unchecked that is two
+# permanent errors every period in a log Log_Error_Watch pages on — noise this
+# plugin would have created for itself.
+
+def test_a_probe_that_moved_the_comm_time_counts_as_answered(plugin_mod):
+    t0, t1 = datetime(2026, 9, 9, 10), datetime(2026, 9, 9, 11)
+    assert plugin_mod.Plugin.zwave_probe_strikes(2, t0, t1) == 0
+
+
+def test_a_probe_that_changed_nothing_is_a_strike(plugin_mod):
+    t0 = datetime(2026, 9, 9, 10)
+    assert plugin_mod.Plugin.zwave_probe_strikes(0, t0, t0) == 1
+    assert plugin_mod.Plugin.zwave_probe_strikes(2, t0, t0) == 3
+
+
+def test_the_first_ever_probe_is_not_a_strike(plugin_mod):
+    assert plugin_mod.Plugin.zwave_probe_strikes(0, None, datetime.now()) == 0
+    # Both absent is the case that makes the `comm_at_probe is None` half of the
+    # guard load-bearing: without it this returns a strike for a node that has
+    # never been probed at all. A mutation sweep found nothing was testing it.
+    assert plugin_mod.Plugin.zwave_probe_strikes(2, None, None) == 0
+
+
+def test_an_unusable_strike_count_starts_again_at_one(plugin_mod):
+    t0 = datetime(2026, 9, 9, 10)
+    assert plugin_mod.Plugin.zwave_probe_strikes("x", t0, t0) == 1
+
+
+def test_a_node_that_ignores_three_probes_is_not_probed_again(plugin_mod, plugin):
+    host = _host(plugin)
+    comm = datetime.now() - timedelta(hours=200)
+    dev = _ZDev(comm)
+    for expected in (True, False, False):
+        # each round is a fresh period, and the device never replies
+        host._zwave_probed[dev.id] = (
+            host._zwave_probed[dev.id][0] - timedelta(hours=12),
+            host._zwave_probed[dev.id][1],
+            host._zwave_probed[dev.id][2]) if dev.id in host._zwave_probed else None
+        if host._zwave_probed.get(dev.id) is None:
+            host._zwave_probed.pop(dev.id, None)
+        got = host._probe_quiet_zwave(dev)
+        if expected:
+            assert got is True
+    assert len(plugin_mod.indigo.device.status_requests) == 3, \
+        "asked three times"
+    # a fourth period: it has ignored three, so it is left alone
+    w, c, st = host._zwave_probed[dev.id]
+    host._zwave_probed[dev.id] = (w - timedelta(hours=12), c, st)
+    assert host._probe_quiet_zwave(dev) is False
+    assert len(plugin_mod.indigo.device.status_requests) == 3, "and not a fourth time"
+
+
+def test_a_node_that_starts_answering_is_probed_normally_again(plugin_mod, plugin):
+    """Self-healing: a repeater that comes back must not stay written off."""
+    host = _host(plugin)
+    old_comm = datetime.now() - timedelta(hours=200)
+    dev = _ZDev(old_comm)
+    host._zwave_probed[dev.id] = (datetime.now() - timedelta(hours=12), old_comm, 3)
+    assert host._probe_quiet_zwave(dev) is False, "written off while silent"
+    dev.lastSuccessfulComm = datetime.now() - timedelta(hours=100)   # it spoke
+    host._zwave_probed[dev.id] = (datetime.now() - timedelta(hours=12), old_comm, 3)
+    assert host._probe_quiet_zwave(dev) is True, "it answered, so start again"
+
+
+def test_a_device_that_says_it_cannot_be_asked_is_believed(plugin_mod, plugin):
+    host = _host(plugin)
+    dev = _ZDev(datetime.now() - timedelta(hours=200))
+    dev.supportsStatusRequest = False
+    assert host._probe_quiet_zwave(dev) is False
