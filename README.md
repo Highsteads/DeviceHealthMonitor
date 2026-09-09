@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.5.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.6.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -142,6 +142,11 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.6.0** - **ESPHome devices are watched now.** They never were, so a failure of anything on that bridge went unnoticed indefinitely - which is exactly what happened on 8 September, when a freezer monitor was off the network all evening and nothing anywhere said so. They are judged on the bridge's own connection flag rather than on silence, because an ESPHome sensor only publishes when a reading changes and a steady load can be quiet for a long time while being perfectly well.
+
+Adding them needed one thing more than a line in the watch list. The away tolerance - how long a device may be out of contact before it is reported - has always been measured from the last successful communication, and for ESPHome that figure is not what it appears to be: the bridge writes "disconnected" from inside its own retry loop, and Indigo treats any such write as fresh contact. A node unreachable for hours therefore looks like it spoke seconds ago, and a tolerance measured from it would never run out, so the device could never be reported at all. Measured on 8 September: a monitor dropped at 21:06 and ninety seconds later still claimed contact thirty seconds old, while its own record of when it was last heard sat correctly frozen three minutes earlier. That record is the clock now, for ESPHome only - the other protocols are untouched.
+
 
 
 **v2.5.2** - **The settings dialog was stretched wider than its own window, so the help text beside each setting was cut off mid-sentence.** The short help that can be attached to a setting is drawn on a single line and never wraps, so the longest one decides how wide every row is — and the window cannot be widened past a fixed maximum. All five long ones have moved into ordinary description paragraphs, which do wrap. Two new checks fail the build if any help text or setting label grows long enough to do it again. No setting or behaviour changed.

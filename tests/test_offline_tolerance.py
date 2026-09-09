@@ -274,3 +274,137 @@ def test_a_configured_device_that_is_healthy_is_never_touched(host, plugin_mod):
     before, after = src.split("_apply_offline_tolerance", 1)
     assert "if offline:" in before, \
         "the tolerance must be applied only to an offline verdict"
+
+
+# ── ESPHome: the away clock had to change, or the tolerance could never expire ──
+# ESPHomeBridge was not watched at all until 09-09-2026. Adding it was not just a
+# line in MONITORED_PLUGINS: it writes connected=False from inside its reconnect
+# loop on EVERY failed attempt, and Indigo refreshes lastSuccessfulComm on any
+# state write, so a node unreachable for hours reports a comm time of seconds
+# ago. An away tolerance measured from that never expires — the device could
+# never be reported, which is the very fault the change exists to fix.
+# Measured 08-09-2026: dropped 21:06:27; at 21:08:02 lastSuccessfulComm was 30 s
+# old while the node's own lastSeen stood frozen at 21:04:23.
+
+ESPHOME = "com.clives.indigoplugin.esphomebridge"
+SHELLY  = "com.clives.indigoplugin.shellydirect"
+
+
+def test_esphome_away_is_measured_from_its_own_lastSeen(plugin_mod):
+    comm = datetime(2026, 9, 8, 21, 7, 32)      # refreshed by the retry loop
+    seen = datetime(2026, 9, 8, 21, 4, 23)      # the last real contact
+    got = plugin_mod.Plugin.away_clock(ESPHOME, {"lastSeen": "2026-09-08T21:04:23"}, comm)
+    assert got == seen, "the retry loop's comm time must not be the away clock"
+
+
+def test_a_space_separated_timestamp_is_understood_too(plugin_mod):
+    assert plugin_mod.Plugin.away_clock(
+        ESPHOME, {"lastSeen": "2026-09-08 21:04:23"}, None) == datetime(2026, 9, 8, 21, 4, 23)
+
+
+def test_every_other_protocol_keeps_lastSuccessfulComm(plugin_mod):
+    """Scoped deliberately: z2m publishes a lastSeen too, and switching its
+    clock unmeasured would change behaviour nobody asked about."""
+    comm = datetime(2026, 9, 8, 21, 7, 32)
+    assert plugin_mod.Plugin.away_clock(
+        SHELLY, {"lastSeen": "2026-01-01T00:00:00"}, comm) == comm
+
+
+def test_an_esphome_node_with_no_lastSeen_has_no_away_clock(plugin_mod):
+    """None means "report it": falling back to the comm time would reinstate
+    the tolerance that can never expire."""
+    assert plugin_mod.Plugin.away_clock(ESPHOME, {}, datetime(2026, 9, 8, 21, 7)) is None
+
+
+def test_an_unparseable_lastSeen_has_no_away_clock(plugin_mod):
+    assert plugin_mod.Plugin.away_clock(
+        ESPHOME, {"lastSeen": "yesterday"}, datetime(2026, 9, 8, 21, 7)) is None
+    assert plugin_mod.Plugin.away_clock(
+        ESPHOME, {"lastSeen": ""}, datetime(2026, 9, 8, 21, 7)) is None
+
+
+# ── the check itself ─────────────────────────────────────────────────────────
+
+class _EspDev:
+    """Named apart from the _Dev already in this file: appending to a test
+    module silently rebinds a helper for every test ABOVE it too, and this
+    shadowing turned seven passing tolerance tests red."""
+    def __init__(self, states, pid=ESPHOME):
+        self.states, self.pluginId, self.id, self.name = states, pid, 1, "Freezer"
+
+
+def test_a_connected_esphome_node_is_healthy(plugin_mod, plugin):
+    assert plugin._check_esphome(_EspDev({"connected": True})) == (False, "")
+
+
+def test_a_disconnected_esphome_node_is_offline(plugin_mod, plugin):
+    offline, reason = plugin._check_esphome(_EspDev({"connected": False}))
+    assert offline is True and "connected" in reason
+
+
+def test_the_string_form_is_never_coerced(plugin_mod, plugin):
+    """bool("Disconnected") is True — the value the check exists to catch."""
+    for bad in ("false", "False", "no", "0", "offline", "Disconnected"):
+        assert plugin._check_esphome(_EspDev({"connected": bad}))[0] is True, bad
+    for good in ("true", "True", "online", "Connected"):
+        assert plugin._check_esphome(_EspDev({"connected": good}))[0] is False, good
+
+
+def test_a_node_that_says_nothing_is_assumed_well(plugin_mod, plugin):
+    """Silence is not a fault here — an ESPHome sensor publishes on change, so
+    a steady freezer load can be quiet for a long time and be perfectly well."""
+    assert plugin._check_esphome(_EspDev({}))[0] is False
+
+
+def test_esphome_is_in_the_watch_list(plugin_mod):
+    assert plugin_mod.MONITORED_PLUGINS.get(ESPHOME) == "esphome"
+
+
+# ── the wiring, not just the parts ───────────────────────────────────────────
+# A mutation that listed esphome in MONITORED_PLUGINS and then never dispatched
+# to _check_esphome survived the first sweep: every test above drives the check
+# directly, so nothing exercised the path from the watch list to it. That is the
+# one seam where "watched" and "actually checked" can come apart.
+
+class _EspFullDev(_EspDev):
+    def __init__(self, states, comm=None):
+        super().__init__(states)
+        self.lastSuccessfulComm = comm
+        self.enabled = True
+
+
+def test_a_disconnected_esphome_device_reaches_a_verdict(plugin_mod, plugin):
+    offline, reason = plugin._check_device_health(_EspFullDev({"connected": False}))
+    assert offline is True, "listed in MONITORED_PLUGINS but never dispatched"
+    assert "connected" in reason
+
+
+def test_a_connected_esphome_device_reaches_a_verdict(plugin_mod, plugin):
+    offline, _ = plugin._check_device_health(_EspFullDev({"connected": True}))
+    assert offline is False
+
+
+def test_an_unwatched_plugin_still_returns_not_monitored(plugin_mod, plugin):
+    dev = _EspFullDev({"connected": False})
+    dev.pluginId = "com.example.somethingelse"
+    assert plugin._check_device_health(dev) == (None, None)
+
+
+def test_the_away_tolerance_reaches_an_esphome_device_through_the_dispatch(plugin_mod, plugin):
+    """The freezer case end to end: away inside its tolerance is not reported,
+    and the clock is lastSeen — the comm time here is deliberately fresh,
+    because ESPHomeBridge's retry loop keeps refreshing it."""
+    plugin.offline_tol_by_id = {1: 24.0}
+    seen = datetime.now() - timedelta(hours=3)
+    dev = _EspFullDev({"connected": False,
+                       "lastSeen": seen.strftime("%Y-%m-%dT%H:%M:%S")},
+                      comm=datetime.now())
+    assert plugin._check_device_health(dev)[0] is False, "3h away, 24h tolerance"
+
+    seen = datetime.now() - timedelta(hours=30)
+    dev = _EspFullDev({"connected": False,
+                       "lastSeen": seen.strftime("%Y-%m-%dT%H:%M:%S")},
+                      comm=datetime.now())
+    offline, reason = plugin._check_device_health(dev)
+    assert offline is True, "30h away against a 24h tolerance must be reported"
+    assert "away 30" in reason or "away 29" in reason, reason

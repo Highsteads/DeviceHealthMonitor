@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        03-09-2026
-# Version:     2.5.2
+# Version:     2.6.0
 #
 # v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
 # 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
@@ -219,13 +219,14 @@ MONITORED_PLUGINS = {
     "com.clives.indigoplugin.shellyg1":                "shelly",
     "com.perceptiveautomation.indigoplugin.zwave":     "zwave",
     "com.clives.indigoplugin.ecowitt":                 "ecowitt",
+    "com.clives.indigoplugin.esphomebridge":           "esphome",
 }
 
 PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.5.2"
+PLUGIN_VERSION = "2.6.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -792,6 +793,8 @@ class Plugin(indigo.PluginBase):
                 offline, reason = self._check_zwave(dev)
             elif protocol == "ecowitt":
                 offline, reason = self._check_ecowitt(dev)
+            elif protocol == "esphome":
+                offline, reason = self._check_esphome(dev)
             else:
                 return None, None
             if offline:
@@ -802,6 +805,43 @@ class Plugin(indigo.PluginBase):
 
         return None, None
 
+    @staticmethod
+    def away_clock(pluginId, states, last_successful_comm, now=None):
+        """When this device was last GENUINELY in contact, or None.
+
+        `lastSuccessfulComm` is the right clock for every protocol here but one.
+        It is the WRONG one for ESPHome: ESPHomeBridge writes connected=False
+        and status=Disconnected from INSIDE its reconnect loop, on every failed
+        attempt (its plugin.py:1311), and Indigo refreshes lastSuccessfulComm on
+        any state write. So a node that has been unreachable for hours reports a
+        comm time of seconds ago, and an away tolerance measured from it would
+        never expire — the device could never be reported at all, which is the
+        exact fault this whole change exists to fix.
+
+        Measured 08-09-2026: an Athom freezer monitor dropped at 21:06:27, and
+        at 21:08:02 its lastSuccessfulComm was 30 SECONDS old while its own
+        `lastSeen` stood frozen at 21:04:23. `lastSeen` is the honest clock, and
+        being a device STATE it survives a plugin restart exactly as
+        lastSuccessfulComm does — so the standing rule that our own notice must
+        never be the clock is kept.
+
+        Scoped to ESPHome deliberately. z2m publishes a `lastSeen` too, and
+        swapping its clock unmeasured would change behaviour nobody asked about.
+        """
+        if MONITORED_PLUGINS.get(pluginId) == "esphome":
+            raw = (states or {}).get("lastSeen")
+            if raw:
+                for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+                    try:
+                        return datetime.strptime(str(raw), fmt)
+                    except (ValueError, TypeError):
+                        continue
+                # Unparseable: fall through rather than guess. Returning the
+                # comm time here would reinstate the never-expiring tolerance.
+                return None
+            return None
+        return last_successful_comm
+
     def _apply_offline_tolerance(self, dev, reason):
         """Hold back a verdict for a device that is allowed to be away a while.
 
@@ -811,10 +851,11 @@ class Plugin(indigo.PluginBase):
         tell a reported fault from a silence timeout would be the same rule with a
         fragile seam down the middle.
 
-        The clock is lastSuccessfulComm, NOT the moment we first noticed. That
-        matters: our own notice is in memory, so a plugin restart would reset it and
-        a device could sit inside a fresh grace period for ever, alerting never. The
-        last time it actually spoke cannot be reset by anything we do.
+        The clock is the device's own record of when it last spoke — see
+        away_clock — and NOT the moment we first noticed. That matters: our own
+        notice is in memory, so a plugin restart would reset it and a device could
+        sit inside a fresh grace period for ever, alerting never. The last time it
+        actually spoke cannot be reset by anything we do.
 
         A device that has NEVER communicated is reported straight away however long
         the tolerance. There is no start point to measure from, and a device that
@@ -827,7 +868,12 @@ class Plugin(indigo.PluginBase):
             return True, reason
         if tol is None:
             return False, ""
-        last = dev.lastSuccessfulComm
+        # getattr on states too: this runs for every protocol, and only the
+        # ESPHome branch reads them — a device object without them must not
+        # take the whole health check down.
+        last = self.away_clock(getattr(dev, "pluginId", ""),
+                               getattr(dev, "states", None),
+                               dev.lastSuccessfulComm)
         if last is None:
             return True, f"{reason} — never communicated, so the away tolerance cannot apply"
         away = self._hours_since(last)
@@ -853,6 +899,34 @@ class Plugin(indigo.PluginBase):
         if avail == "offline":
             return True, "availability=offline"
         return False, ""
+
+    def _check_esphome(self, dev):
+        """ESPHome nodes are judged on the plugin's own connected flag.
+
+        Not on silence: an ESPHome sensor publishes on change, so a freezer
+        monitor sitting at a steady load can be quiet for a long time and be
+        perfectly well. ESPHomeBridge tracks the API connection itself and
+        writes `connected` on every transition, which is the honest signal.
+
+        Added 09-09-2026 because ESPHomeBridge was not watched AT ALL: both
+        freezer monitors are ESPHome, so a failure of either would have gone
+        unnoticed indefinitely — which is exactly what happened on 08-09-2026,
+        when one was away all evening and nothing anywhere said so.
+        """
+        raw = dev.states.get("connected", True)
+        if isinstance(raw, bool):
+            online = raw
+        elif isinstance(raw, (int, float)):
+            online = bool(raw)
+        else:
+            # bool("Disconnected") is True, so a string is never coerced.
+            online = str(raw).strip().lower() not in ("false", "0", "no",
+                                                      "offline", "disconnected")
+        # An empty reason when healthy. _check_shelly hands back its reason
+        # either way and the caller happens to ignore it, but a string reading
+        # "connected=False" sitting on a connected device is the kind of thing
+        # that gets quoted in a log line later and believed.
+        return (True, "connected=False") if not online else (False, "")
 
     def _check_shelly(self, dev):
         # deviceOnline may be bool or string depending on device type
