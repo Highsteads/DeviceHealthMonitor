@@ -21,10 +21,11 @@
     </Field>
 
     <Field id="zwave_mains_hours" type="textfield" defaultValue="6">
-        <Label>Mains device threshold (hours) — RETIRED, changing this does nothing</Label>
+        <Label>Mains device quiet time (hours)</Label>
+        <Description>How long a mains node may be quiet before it is checked on.</Description>
     </Field>
     <Field id="label_zwave_mains_hours_info" type="label">
-        <Label>Kept only so existing settings are not lost. Nothing reads this value. Mains Z-Wave health is judged by Indigo's own errorState instead, because lastSuccessfulComm on an un-polled mains node just tracks "time since last used" — an idle-but-alive light or repeater reads stale for days. Battery devices still use the threshold above.</Label>
+        <Label>Silence is not treated as a fault on a mains Z-Wave device — a light or a repeater nobody has commanded is legitimately quiet for months, and measurement shows the healthy and the dead interleave completely, from three months to two years of silence. So this is not an alert threshold. When a mains node has been quiet for this long, the plugin sends it a status request, and Indigo's own errorState gives the verdict on the next scan. A node that answers stays silent and healthy; a node that does not is reported. Rate-limited to one check per node per period, so the traffic is a handful of frames. Setting it to 0 turns the checking off, and a dead mains node will then go unnoticed for as long as nothing else commands it.</Label>
     </Field>
 
     <Field id="sep_ecowitt" type="separator"/>

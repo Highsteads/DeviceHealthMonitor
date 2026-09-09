@@ -128,12 +128,31 @@ class FakePluginBase:
         self.slept.append(seconds)
 
 
+class FakeDeviceNamespace:
+    """Stands in for indigo.device — the COMMAND namespace, distinct from
+    indigo.devices, which is the collection. The plugin reached for
+    statusRequest here on 09-09-2026 to poke quiet mains Z-Wave nodes, and the
+    stub had no such namespace at all: an AttributeError in the check rather
+    than a test failure, which is how it was found. Sent ids are recorded so a
+    test can assert what was actually asked for."""
+
+    def __init__(self):
+        self.status_requests = []
+        self.raise_on_status = None
+
+    def statusRequest(self, dev_id):
+        if self.raise_on_status is not None:
+            raise self.raise_on_status
+        self.status_requests.append(dev_id)
+
+
 def _build_fake_indigo():
     ind = types.ModuleType("indigo")
     ind.PluginBase = FakePluginBase
     ind.Dict       = dict
     ind.List       = list
     ind.devices    = FakeCollection()
+    ind.device     = FakeDeviceNamespace()
     ind.server     = FakeServer()
     return ind
 

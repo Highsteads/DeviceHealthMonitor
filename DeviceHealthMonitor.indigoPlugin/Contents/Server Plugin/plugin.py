@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        03-09-2026
-# Version:     2.6.0
+# Version:     2.7.0
 #
 # v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
 # 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
@@ -226,7 +226,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.6.0"
+PLUGIN_VERSION = "2.7.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -614,6 +614,9 @@ class Plugin(indigo.PluginBase):
 
         # device_id -> datetime first alerted
         self.alerted: dict[int, datetime] = {}
+        # When each quiet mains Z-Wave node was last poked. In memory only:
+        # a restart re-probes them all, which is ~10 frames and costs nothing.
+        self._zwave_probed: dict[int, datetime] = {}
         self._restore_alerted()
         # Device ids whose alert we could not deliver — so a Pushover outage keeps
         # retrying instead of latching the device as "already alerted" (see _run_scan).
@@ -740,6 +743,11 @@ class Plugin(indigo.PluginBase):
                     log(f"[OFFLINE] {dev.name}: {reason}", level="WARNING")
                 pending.append((dev.id, dev.name, reason))
             else:
+                # A quiet mains Z-Wave node gets poked rather than accused. Silence
+                # cannot separate healthy from dead here (measured 09-09-2026 — the
+                # two interleave from 2191h to 15098h), but a ping can, and it sets
+                # the errorState this check already trusts. See zwave_probe_due.
+                self._probe_quiet_zwave(dev, now)
                 # Clear an undelivered entry silently: it recovered before we ever
                 # managed to tell anyone, so there is no alert to report recovery from.
                 self._undelivered.discard(dev.id)
@@ -804,6 +812,54 @@ class Plugin(indigo.PluginBase):
             log(f"Error checking {dev.name}: {e}", level="ERROR")
 
         return None, None
+
+    @staticmethod
+    def zwave_probe_due(silent_hours, threshold_hours, hours_since_probe):
+        """Should this quiet mains Z-Wave node be poked to see if it is there?
+
+        SILENCE CANNOT BE THE VERDICT ON A MAINS NODE, and the 09-09-2026
+        measurement is emphatic. Sorted by how long each had been quiet, the
+        healthy and the dead interleave completely:
+
+            2191 h  En Suite Floor Heating Switch      HEALTHY (pings fine)
+            2192 h  En Suite Floor Heating Thermostat  DEAD
+            3196 h  Loft Repeater Dimmable Load        HEALTHY
+            4907 h  Garage Loft Repeater Smart Plug    HEALTHY
+            5545 h  HP Printer Power Plug              DEAD
+           15098 h  Bedroom 3 Repeater Smart Plug      DEAD
+
+        No threshold separates those. A mains node nobody commands is simply
+        quiet, for months, and that is normal — which is exactly what the
+        29-05-2026 decision found and why this check was retired.
+
+        A PING separates them perfectly. The network optimise that morning
+        reached all eleven healthy nodes and failed on all three dead ones, and
+        a hand-sent status request set errorState='no ack' on those three
+        within seconds — the signal the check already trusts, which nothing had
+        ever caused to be set because nobody commands an idle repeater.
+
+        So silence does not raise an alert here. It schedules a POKE, and
+        errorState delivers the verdict on the next scan. Three devices had
+        been dead for 91, 231 and 629 days without one word from this plugin.
+
+        Rate-limited to one probe per node per threshold period: the point is
+        to notice within hours, not to poll.
+        """
+        if threshold_hours is None:
+            return False
+        try:
+            silent = float(silent_hours)
+            thresh = float(threshold_hours)
+        except (TypeError, ValueError):
+            return False
+        if thresh <= 0 or silent <= thresh:
+            return False
+        if hours_since_probe is None:
+            return True
+        try:
+            return float(hours_since_probe) >= thresh
+        except (TypeError, ValueError):
+            return True
 
     @staticmethod
     def away_clock(pluginId, states, last_successful_comm, now=None):
@@ -899,6 +955,35 @@ class Plugin(indigo.PluginBase):
         if avail == "offline":
             return True, "availability=offline"
         return False, ""
+
+    def _probe_quiet_zwave(self, dev, now=None):
+        """Send a status request to a quiet mains Z-Wave node. Returns True if
+        one was sent. Never raises: a probe failing is the answer, not an error."""
+        if MONITORED_PLUGINS.get(getattr(dev, "pluginId", "")) != "zwave":
+            return False
+        if dev.errorState:
+            return False                 # already condemned; nothing to learn
+        if getattr(dev, "batteryLevel", None) is not None:
+            return False                 # battery nodes sleep; a ping proves nothing
+        last = dev.lastSuccessfulComm
+        if last is None:
+            return False                 # never spoke: a pairing fault, not a quiet node
+        now = now or datetime.now()
+        silent = self._hours_since(last, now)
+        prev = self._zwave_probed.get(dev.id)
+        since = None if prev is None else self._hours_since(prev, now)
+        if not self.zwave_probe_due(silent, self.zwave_mains_hours, since):
+            return False
+        self._zwave_probed[dev.id] = now
+        try:
+            indigo.device.statusRequest(dev.id)
+            if self.debug:
+                log(f"Probed quiet mains Z-Wave node {dev.name} "
+                    f"(silent {silent:.1f}h) — errorState decides on the next scan")
+            return True
+        except Exception as e:
+            log(f"Could not probe {dev.name}: {e}", level="WARNING")
+            return False
 
     def _check_esphome(self, dev):
         """ESPHome nodes are judged on the plugin's own connected flag.

@@ -408,3 +408,113 @@ def test_the_away_tolerance_reaches_an_esphome_device_through_the_dispatch(plugi
     offline, reason = plugin._check_device_health(dev)
     assert offline is True, "30h away against a 24h tolerance must be reported"
     assert "away 30" in reason or "away 29" in reason, reason
+
+
+# ── quiet mains Z-Wave nodes are POKED, never accused ────────────────────────
+# Measured 09-09-2026, sorted by how long each had been quiet — healthy and dead
+# interleave completely, so no silence threshold can separate them:
+#     2191 h  En Suite Floor Heating Switch      HEALTHY (pings fine)
+#     2192 h  En Suite Floor Heating Thermostat  DEAD
+#     3196 h  Loft Repeater Dimmable Load        HEALTHY
+#     4907 h  Garage Loft Repeater Smart Plug    HEALTHY
+#     5545 h  HP Printer Power Plug              DEAD
+#    15098 h  Bedroom 3 Repeater Smart Plug      DEAD
+# A ping separates them perfectly, and it sets the errorState the check already
+# trusts. Three devices had been dead 91, 231 and 629 days in total silence.
+
+def test_a_node_quiet_past_the_threshold_is_probed(plugin_mod):
+    assert plugin_mod.Plugin.zwave_probe_due(200.0, 6.0, None) is True
+
+
+def test_a_node_inside_the_threshold_is_left_alone(plugin_mod):
+    assert plugin_mod.Plugin.zwave_probe_due(5.9, 6.0, None) is False
+    assert plugin_mod.Plugin.zwave_probe_due(6.0, 6.0, None) is False, "the bar is ABOVE it"
+
+
+def test_a_recently_probed_node_is_not_probed_again(plugin_mod):
+    """One probe per node per period — the point is to notice within hours,
+    not to poll. The scan runs every ten minutes."""
+    assert plugin_mod.Plugin.zwave_probe_due(5000.0, 6.0, 0.2) is False
+    assert plugin_mod.Plugin.zwave_probe_due(5000.0, 6.0, 5.9) is False
+    assert plugin_mod.Plugin.zwave_probe_due(5000.0, 6.0, 6.0) is True
+
+
+def test_zero_or_none_turns_probing_off(plugin_mod):
+    assert plugin_mod.Plugin.zwave_probe_due(5000.0, 0, None) is False
+    assert plugin_mod.Plugin.zwave_probe_due(5000.0, None, None) is False
+
+
+def test_unusable_numbers_never_probe(plugin_mod):
+    assert plugin_mod.Plugin.zwave_probe_due("x", 6.0, None) is False
+    assert plugin_mod.Plugin.zwave_probe_due(None, 6.0, None) is False
+    assert plugin_mod.Plugin.zwave_probe_due(200.0, "x", None) is False
+
+
+def test_an_unreadable_probe_time_probes_rather_than_never(plugin_mod):
+    """Failing open: the cost of an extra frame is nothing, and the cost of
+    never probing is a device dead for 629 days in silence."""
+    assert plugin_mod.Plugin.zwave_probe_due(200.0, 6.0, "x") is True
+
+
+# ── who gets probed ──────────────────────────────────────────────────────────
+
+class _ZDev:
+    def __init__(self, comm, err="", battery=None,
+                 pid="com.perceptiveautomation.indigoplugin.zwave"):
+        self.id, self.name, self.pluginId = 7, "Loft Repeater", pid
+        self.lastSuccessfulComm, self.errorState = comm, err
+        self.batteryLevel, self.states, self.enabled = battery, {}, True
+
+
+def _host(plugin, hours=6.0):
+    plugin.zwave_mains_hours = hours
+    plugin._zwave_probed = {}
+    return plugin
+
+
+def test_a_quiet_mains_node_is_probed(plugin_mod, plugin):
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(_ZDev(datetime.now() - timedelta(hours=200))) is True
+    assert plugin_mod.indigo.device.status_requests == [7]
+
+
+def test_a_node_already_in_error_is_not_probed(plugin_mod, plugin):
+    """It is already condemned — a probe teaches nothing and adds traffic."""
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(
+        _ZDev(datetime.now() - timedelta(hours=200), err="no ack")) is False
+
+
+def test_a_battery_node_is_never_probed(plugin_mod, plugin):
+    """A sleeping node cannot answer a ping, so a failure would mean nothing."""
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(
+        _ZDev(datetime.now() - timedelta(hours=200), battery=80)) is False
+
+
+def test_a_node_that_never_communicated_is_not_probed(plugin_mod, plugin):
+    """No start point to measure from — that is a pairing fault, reported by
+    its own rule rather than poked at."""
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(_ZDev(None)) is False
+
+
+def test_a_non_zwave_device_is_never_probed(plugin_mod, plugin):
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(
+        _ZDev(datetime.now() - timedelta(hours=200),
+              pid="com.clives.indigoplugin.shellydirect")) is False
+
+
+def test_the_probe_is_recorded_so_it_is_not_repeated(plugin_mod, plugin):
+    host = _host(plugin)
+    dev = _ZDev(datetime.now() - timedelta(hours=200))
+    assert host._probe_quiet_zwave(dev) is True
+    assert host._probe_quiet_zwave(dev) is False, "a 10-minute scan must not re-poke"
+    assert plugin_mod.indigo.device.status_requests == [7]
+
+
+def test_a_probe_that_raises_is_not_an_error_for_the_scan(plugin_mod, plugin):
+    plugin_mod.indigo.device.raise_on_status = RuntimeError("controller busy")
+    host = _host(plugin)
+    assert host._probe_quiet_zwave(_ZDev(datetime.now() - timedelta(hours=200))) is False

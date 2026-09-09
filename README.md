@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.6.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.7.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -142,6 +142,13 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.7.0** - **A mains Z-Wave device that has quietly died is finally noticed.** Three of them had been off the network for 91, 231 and 629 days without a single word from this plugin. Silence was never going to find them, and the check was right not to try: a light or a repeater that nobody has commanded is legitimately quiet for months, and measurement on 9 September put the healthy and the dead completely interleaved, from three months of silence to two years. No threshold separates those.
+
+A ping separates them perfectly. So silence no longer accuses a mains node, it schedules a knock on the door: once one has been quiet for the configured time the plugin sends it a status request, and Indigo's own error state - which the check has always trusted, and which nothing had ever caused to be set on an idle node - gives the verdict on the next scan. One knock per node per period, so the traffic is a handful of frames a day.
+
+The mains threshold setting, retired in May because it could not be made to work, is what controls the quiet time now. Battery devices are left alone: a sleeping node cannot answer a ping, so a failure would mean nothing.
+
 
 **v2.6.0** - **ESPHome devices are watched now.** They never were, so a failure of anything on that bridge went unnoticed indefinitely - which is exactly what happened on 8 September, when a freezer monitor was off the network all evening and nothing anywhere said so. They are judged on the bridge's own connection flag rather than on silence, because an ESPHome sensor only publishes when a reading changes and a steady load can be quiet for a long time while being perfectly well.
 
