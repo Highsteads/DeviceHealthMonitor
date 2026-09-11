@@ -4,9 +4,9 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Sonnet 5
-# Date:        03-09-2026
-# Version:     2.7.1
+# Author:      CliveS & Claude Fable 5.1
+# Date:        11-09-2026
+# Version:     2.7.2
 #
 # v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
 # 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
@@ -226,7 +226,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.7.1"
+PLUGIN_VERSION = "2.7.2"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
