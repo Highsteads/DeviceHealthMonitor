@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.7.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.8.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -13,8 +13,12 @@ An Indigo home automation plugin that (1) continuously monitors all physical dev
 | Shelly Gen1 | ShellyGen1 | `deviceOnline` state (True/False) |
 | Z-Wave | Indigo native | Indigo's `errorState` for mains, `lastSuccessfulComm` threshold for battery |
 | Ecowitt | Ecowitt plugin | `lastChanged` timestamp vs threshold (proxy) |
+| ESPHome | ESPHomeBridge | the bridge's own `connected` flag, never silence |
+| Evohome radiator valves | RAMSES_ESP | the zone's `errorState`, never silence |
 
-Everything else is ignored by the *device-level* scan above (HomeKit bridges, virtual devices, timers, etc.). The **plugin watchdog** (below) is a separate layer that does watch comms plugins such as SigenEnergyManager, EcoFlow and RAMSES — at the plugin level rather than per device.
+Everything else is ignored by the *device-level* scan above (HomeKit bridges, virtual devices, timers, etc.). The **plugin watchdog** (below) is a separate layer that watches comms plugins themselves — whether the plugin is running at all — rather than the devices behind them.
+
+Two of those rows are judged on a flag rather than on how long since the device was heard from, and that is deliberate. An ESPHome sensor publishes only when its reading changes, so a freezer sitting at a steady load is legitimately quiet. An Evohome zone is the opposite problem: the gateway keeps the zone device up to date every few minutes, so its clock stays fresh while the radiator valve in that room has said nothing for days. In both cases silence is not evidence, and the owning plugin already knows the answer.
 
 ## Features
 
@@ -142,6 +146,10 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.8.0** - **Your radiator valves are now watched.** The Evohome plugin learned this week to tell whether each radiator valve is still answering and what its battery is doing, and it marks the room in error when one goes quiet. Nothing was reading that. It wrote a single line to the log, which is recorded but never sent to your phone, so a dead valve would have been found and then told to nobody. This plugin now watches those rooms alongside everything else, and a silent valve reaches you like any other offline device.
+
+It judges a room on whether the Evohome plugin has flagged it, never on how long since the room was heard from, and that distinction is the whole point. The heating controller pushes each room's temperature every few minutes, so the room looks freshly heard from at all times while the valve inside it has been silent for days. A valve that simply has not spoken yet is never called silent, and if the heating gateway itself fails and takes every room with it you get one message rather than twelve.
 
 **v2.7.2** - **The GitHub record inside the bundle now uses the standard spelling.** The plugin bundle carries a small record of where its source lives on GitHub. Ours spelt the two field names its own way, while the plugins Indigo Domotics and the community publish spell them `GithubUser` and `GithubRepo`. It now matches them. Nothing else changed.
 

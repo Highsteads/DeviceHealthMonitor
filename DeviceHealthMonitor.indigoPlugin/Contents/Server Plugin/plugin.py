@@ -6,7 +6,58 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Fable 5.1
 # Date:        11-09-2026
-# Version:     2.7.2
+# Version:     2.8.0
+#
+# v2.8.0 (12-09-2026): EVOHOME RADIATOR VALVES ARE NOW WATCHED. RAMSES_ESP gained
+# per-valve liveness the same day and NOTHING read the error state it sets, so the
+# detector was complete and reached nobody — the one WARNING it logs is recorded by
+# Log_Error_Watch and deliberately never pushed. Same shape as the ESPHome gap closed
+# in v2.6.0 three days earlier: a protocol simply absent from MONITORED_PLUGINS.
+#
+# * Judged on errorState, NOT on silence, and here the distinction is sharper than
+#   anywhere else in this file. A zone device is a THERMOSTAT the gateway keeps up to
+#   date — temperature and setpoint arrive from the controller every few minutes — so
+#   lastSuccessfulComm stays fresh while the radiator VALVE in that room has said
+#   nothing for days. Judged on comm age, every valve in the house reads healthy for
+#   ever. In v2.6.0 the clock measured the plugin rather than the device; here it
+#   measures a DIFFERENT DEVICE altogether.
+# * RAMSES_ESP writes exactly one error string, "valve silent", and clears it when a
+#   valve answers — verified, they are its only two errorState writes. So the user's
+#   own "mark the zone in error" setting is honoured by construction: unticked, no
+#   error is written and this check stands down without knowing the setting exists.
+# * A valve not heard from YET reads unknown, never silent, and RAMSES_ESP will not
+#   call one silent until it has been listening longer than its own threshold — so a
+#   reload cannot raise a fault about its own downtime, and reading the same flag
+#   inherits that grace for free.
+# * A dead gateway takes all twelve zones with it and produces ONE message, not
+#   twelve: the scan batches pending devices into a single Pushover. Pinned by a test,
+#   because twelve pushes is a swipe-away and then the next real one is swiped too.
+# * 12 tests in tests/test_ramses_valves.py, all end to end through the real scan.
+#   Three deliberate breakages — protocol unregistered, dispatch dropped, judged on
+#   comm age — each verified to turn the suite red. Suite 155 -> 167.
+#
+# --- backfilled 12-09-2026: 2.6.0 to 2.7.2 shipped without a header entry ---
+#
+# v2.7.2 (11-09-2026): GithubInfo added to the bundle plist (GithubUser/GithubRepo),
+# the community GitHub-updater record. Nothing here reads it. No behaviour change.
+#
+# v2.7.1 (09-09-2026): the v2.7.0 probe made log noise of its own; quietened.
+#
+# v2.7.0 (09-09-2026): QUIET MAINS Z-WAVE NODES ARE PROBED, NOT ACCUSED. Silence
+# cannot separate healthy from dead on a mains node that nothing polls — measured,
+# the two interleave from 2191h to 15098h — but a status request can, because it
+# sets the errorState the check already trusts. Strikes are counted so a node Indigo
+# refuses outright is not poked for ever.
+#
+# v2.6.0 (09-09-2026): ESPHomeBridge ADDED to MONITORED_PLUGINS — it was not watched
+# at all, so both freezer monitors could fail unnoticed, and one did on 08-09-2026.
+# Judged on the bridge's own `connected` flag, never on silence (an ESPHome sensor
+# publishes on change, so a steady load is legitimately quiet), and the string is
+# never coerced because bool("Disconnected") is True. THE AWAY CLOCK CHANGED WITH IT:
+# ESPHomeBridge writes state from inside its reconnect loop and Indigo refreshes
+# lastSuccessfulComm on ANY state write, so comm age is not liveness there and an
+# away tolerance measured from it could never expire — 7.4 hours adrift on a live
+# node. away_clock() prefers the plugin's own lastSeen for ESPHome only.
 #
 # v2.5.1 (03-09-2026): tuned WATCHDOG_OVERRIDES for DahuaEvents — stale_minutes
 # 240, up from the 60-min discovered default. DahuaEvents' lastSuccessfulComm only
@@ -220,13 +271,14 @@ MONITORED_PLUGINS = {
     "com.perceptiveautomation.indigoplugin.zwave":     "zwave",
     "com.clives.indigoplugin.ecowitt":                 "ecowitt",
     "com.clives.indigoplugin.esphomebridge":           "esphome",
+    "uk.co.clives.ramses.esp":                         "ramses",
 }
 
 PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.7.2"
+PLUGIN_VERSION = "2.8.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -803,6 +855,8 @@ class Plugin(indigo.PluginBase):
                 offline, reason = self._check_ecowitt(dev)
             elif protocol == "esphome":
                 offline, reason = self._check_esphome(dev)
+            elif protocol == "ramses":
+                offline, reason = self._check_ramses(dev)
             else:
                 return None, None
             if offline:
@@ -1058,6 +1112,41 @@ class Plugin(indigo.PluginBase):
         # "connected=False" sitting on a connected device is the kind of thing
         # that gets quoted in a log line later and believed.
         return (True, "connected=False") if not online else (False, "")
+
+    def _check_ramses(self, dev):
+        """An Evohome zone is judged on the error state RAMSES_ESP sets itself.
+
+        NOT on silence, and the distinction matters more here than anywhere else in
+        this file. A zone device is a THERMOSTAT the gateway keeps up to date — its
+        temperature and setpoint arrive from the controller every few minutes — so
+        lastSuccessfulComm stays fresh while the RADIATOR VALVE in that room has said
+        nothing for days. Judging a zone on comm age would report every valve as
+        healthy for ever. Same shape as the ESPHome case above, one layer further in:
+        there the clock measured the plugin rather than the device, here it measures a
+        different device altogether.
+
+        RAMSES_ESP writes exactly one error string, "valve silent", and clears it when
+        a valve answers again — checked, those are its only two errorState writes — so
+        the flag is unambiguous. It also means the user's own "mark the zone device in
+        error when a valve goes silent" setting is honoured by construction: with it
+        unticked no error is written, and this check stands down without needing to
+        know the setting exists.
+
+        Deliberately NOT judged on the `trvStatus` state, which is written either way.
+
+        A valve that has not been heard from YET reads "unknown", never "silent", and
+        RAMSES_ESP will not call one silent until it has been listening longer than its
+        own threshold — so a plugin reload cannot raise a fault about its own downtime
+        and this check inherits that grace for free.
+
+        Added 12-09-2026 with RAMSES_ESP 1.6.0, which gained per-valve liveness the
+        same day. Without this the detector was complete and reached nobody: nothing
+        read that error state, and the one WARNING it logs is recorded by
+        Log_Error_Watch but deliberately never pushed.
+        """
+        if dev.errorState:
+            return True, f"errorState={dev.errorState!r}"
+        return False, ""
 
     def _check_shelly(self, dev):
         # deviceOnline may be bool or string depending on device type
