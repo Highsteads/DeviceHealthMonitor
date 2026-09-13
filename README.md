@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.8.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.8.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -146,6 +146,8 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.8.1** - **The plugin that backs up the Z-Wave stick was being restarted for doing nothing wrong.** It has one device, and that device only changes state when someone runs a backup or a restore by hand - sitting idle in between is exactly right. The watchdog's general rule treats an hour of silence as a wedge, so it restarted that plugin three times in one day and then gave up and asked for help. It is now judged only on whether it is still running, never on how long since it last spoke.
 
 **v2.8.0** - **Your radiator valves are now watched.** The Evohome plugin learned this week to tell whether each radiator valve is still answering and what its battery is doing, and it marks the room in error when one goes quiet. Nothing was reading that. It wrote a single line to the log, which is recorded but never sent to your phone, so a dead valve would have been found and then told to nobody. This plugin now watches those rooms alongside everything else, and a silent valve reaches you like any other offline device.
 

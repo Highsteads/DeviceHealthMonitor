@@ -4,9 +4,13 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Fable 5.1
-# Date:        11-09-2026
-# Version:     2.8.0
+# Author:      CliveS & Claude Sonnet 5
+# Date:        13-09-2026
+# Version:     2.8.1
+#
+# v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
+# Backup (stale_minutes: None) — see the comment beside it. Found by the
+# indigo-error-triage scheduled task, which cannot edit this plugin itself.
 #
 # v2.8.0 (12-09-2026): EVOHOME RADIATOR VALVES ARE NOW WATCHED. RAMSES_ESP gained
 # per-valve liveness the same day and NOTHING read the error state it sets, so the
@@ -278,7 +282,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.8.0"
+PLUGIN_VERSION = "2.8.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -509,6 +513,14 @@ WATCHDOG_OVERRIDES = {
     # Broadlink RF devices are TRANSMITTERS. The fire, the blinds and anything else
     # they drive send nothing back, so lastSuccessfulComm moves only when we transmit.
     "com.clives.indigoplugin.broadlinkrf":              {"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+    # Z-Wave Controller Backup has ONE device whose states change only when a user
+    # runs Backup / Verify / Restore from its Configure dialog — there is no natural
+    # interval to size a staleness threshold against, and idle-between-runs is the
+    # plugin working as intended. Live-hit 13-Sep-2026 (the day it shipped): the
+    # discovered default (60 min) restarted it three times chasing that idleness and
+    # hit its own daily cap. Crashed-detection (which does not depend on comm age)
+    # still catches a genuine wedge.
+    "com.clives.indigoplugin.zwave-controller-backup":  {"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
 }
 
 # Never auto-restart these. ClaudeBridge (MCP channel) and this plugin are added in
