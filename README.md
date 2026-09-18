@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.8.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.9.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -8,7 +8,7 @@ An Indigo home automation plugin that (1) continuously monitors all physical dev
 
 | Protocol | Source Plugin | Health Check |
 |---|---|---|
-| Zigbee (via Z2M) | Zigbee2MQTTBridge | `lastSuccessfulComm` freshness (availability can sit stale at "online") |
+| Zigbee (via Z2M) | Zigbee2MQTTBridge | the device's own `lastSeen`, plus z2m's `availability` flag once it has also been silent a while |
 | Shelly Gen2/3/4 | ShellyDirect | `deviceOnline` state (True/False) |
 | Shelly Gen1 | ShellyGen1 | `deviceOnline` state (True/False) |
 | Z-Wave | Indigo native | Indigo's `errorState` for mains, `lastSuccessfulComm` threshold for battery |
@@ -93,7 +93,11 @@ Open Plugin > Device Health Monitor > Configure:
   Indigo's own `errorState` instead, because `lastSuccessfulComm` on an un-polled mains
   node only tracks time since last used — an idle-but-alive light reads stale for days.
 - **Ecowitt threshold** — hours since last state change before alerting (default 24)
-- **Z2M stale threshold** — hours without communication before alerting (default 12)
+- **Z2M stale threshold** — hours without being seen before alerting (default 12)
+- **Z2M grace before trusting an offline flag** — minutes a device must also have been
+  silent before zigbee2mqtt's own offline flag is sent to your phone (default 30). The flag
+  flaps on any marginal radio link; a device held back repeatedly in one day is reported in
+  the log as flapping instead. Set to 0 to page on the raw flag.
 - **Enable plugin watchdog** — turn the whole watchdog layer on or off (default on)
 - **Dry-run** — the watchdog logs and Pushovers what it *would* restart, without acting
   (default on)
@@ -146,6 +150,12 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.9.0** - **A loose Zigbee light was buzzing your phone thirteen times a day.** Zigbee2MQTT pings a mains device about every ten minutes and, with its timeout set to the same ten minutes, one lost packet was enough for it to declare the device offline. This plugin believed the flag on sight and sent a message. Over the week to 18 September that was 41 offline reports across four devices - and three of those four had not actually gone quiet for more than twenty minutes once in the whole week. A device must now have been silent for half an hour as well before the flag reaches you, and half an hour was chosen because it separates the two sets cleanly: the false reports were all twenty minutes and under, the real ones thirty-nine minutes and over.
+
+A light that keeps flapping is still a light with a problem, so it is not simply ignored. A device the grace holds back four times in a day is written to the log as flapping, once, naming it - so the fault stays visible without the phone going off for it.
+
+**The check that was meant to notice a dead Zigbee device could never fire.** It measured time since Indigo last recorded contact, and Indigo refreshes that on any write to the device - including the bridge writing "offline" to it. So the Dining Room temperature sensor had been silent for sixty-seven hours while its contact time read five minutes old, and the twelve-hour threshold had no way of noticing. It now reads the time the device itself last spoke. Measured across the whole estate before changing it: only two of sixty-one Zigbee devices had been silent longer than twelve hours in a week, and both were genuinely broken.
 
 **v2.8.1** - **The plugin that backs up the Z-Wave stick was being restarted for doing nothing wrong.** It has one device, and that device only changes state when someone runs a backup or a restore by hand - sitting idle in between is exactly right. The watchdog's general rule treats an hour of silence as a wedge, so it restarted that plugin three times in one day and then gave up and asked for help. It is now judged only on whether it is still running, never on how long since it last spoke.
 

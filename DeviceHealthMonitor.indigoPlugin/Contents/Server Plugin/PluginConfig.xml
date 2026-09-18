@@ -49,7 +49,14 @@
         <Label>Z2M device stale threshold (hours)</Label>
     </Field>
     <Field id="label_z2m_stale_hours_info" type="label">
-        <Label>Device-level alert if a Z2M device has not communicated for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Label>
+        <Label>Device-level alert if a Z2M device has not been seen for this many hours. Generous by default so sleepy battery sensors are not flagged. (The plugin watchdog below uses its own minute-level thresholds.)</Label>
+    </Field>
+
+    <Field id="z2mOfflineGraceMinutes" type="textfield" defaultValue="30">
+        <Label>Grace before trusting an offline flag (minutes)</Label>
+    </Field>
+    <Field id="label_z2m_grace_info" type="label">
+        <Label>Zigbee2MQTT pings a mains device every few minutes and calls it offline the moment one ping goes missing, so the flag flaps on any device with a marginal radio link. A device must also have been silent this long before the flag is paged. A device the grace holds back repeatedly in one day is reported in the log as flapping instead. Set to 0 to page on the raw flag.</Label>
     </Field>
 
     <Field id="sep_quiet" type="separator"/>

@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        13-09-2026
-# Version:     2.8.1
+# Version:     2.9.0
 #
 # v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
 # Backup (stale_minutes: None) — see the comment beside it. Found by the
@@ -238,7 +238,7 @@ import os
 import os as _os
 import shutil
 import sys as _sys
-from datetime import datetime
+from datetime import date, datetime
 
 import indigo  # noqa — provided by Indigo runtime
 
@@ -282,7 +282,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.8.1"
+PLUGIN_VERSION = "2.9.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -686,6 +686,14 @@ class Plugin(indigo.PluginBase):
         # retrying instead of latching the device as "already alerted" (see _run_scan).
         self._undelivered: set[int] = set()
 
+        # Offline flags the z2m grace held back, counted per day so a device that
+        # flaps all day is still reported once — see _note_flap. In memory only:
+        # the worst a restart can do is reset a day's tally, and the alternative
+        # (persisting it) would make a restart able to SUPPRESS the report.
+        self._flap_day: str            = date.today().isoformat()
+        self._flap_counts: dict[int, int] = {}
+        self._flap_said: set[int]      = set()
+
         # Exclusion list (set of lowercase device names) for the device-level scan
         self.excluded_names: set[str] = set()
         self._load_exclusions()
@@ -726,6 +734,9 @@ class Plugin(indigo.PluginBase):
         self.zwave_mains_hours         = _as_float(values.get("zwave_mains_hours", 6), 6)
         self.ecowitt_hours             = _as_float(values.get("ecowitt_hours", 24), 24)
         self.z2m_stale_hours           = _as_float(values.get("z2m_stale_hours", 12), 12)
+        # How long a z2m device must ALSO have been silent before its own
+        # availability=offline flag is paged. 0 disables the grace entirely.
+        self.z2m_offline_grace_min     = _as_float(values.get("z2mOfflineGraceMinutes", 30), 30)
         # Plugin watchdog (auto-discovering).
         # as_bool, not bool: Indigo re-serialises a saved checkbox as the STRING
         # "false", and bool("false") is True — which would silently switch dry-run
@@ -959,9 +970,9 @@ class Plugin(indigo.PluginBase):
     def away_clock(pluginId, states, last_successful_comm, now=None):
         """When this device was last GENUINELY in contact, or None.
 
-        `lastSuccessfulComm` is the right clock for every protocol here but one.
-        It is the WRONG one for ESPHome: ESPHomeBridge writes connected=False
-        and status=Disconnected from INSIDE its reconnect loop, on every failed
+        `lastSuccessfulComm` is the right clock for most protocols here, and the
+        WRONG one for ESPHome and z2m. ESPHomeBridge writes connected=False and
+        status=Disconnected from INSIDE its reconnect loop, on every failed
         attempt (its plugin.py:1311), and Indigo refreshes lastSuccessfulComm on
         any state write. So a node that has been unreachable for hours reports a
         comm time of seconds ago, and an away tolerance measured from it would
@@ -975,10 +986,21 @@ class Plugin(indigo.PluginBase):
         lastSuccessfulComm does — so the standing rule that our own notice must
         never be the clock is kept.
 
-        Scoped to ESPHome deliberately. z2m publishes a `lastSeen` too, and
-        swapping its clock unmeasured would change behaviour nobody asked about.
+        Z2M JOINED THAT LIST ON 18-09-2026, and the measurement is emphatic. The
+        Dining Room Temperature and Humidity Sensor had been silent since
+        16-09 04:22 — 67.2 hours — while its lastSuccessfulComm read 0.08 hours
+        old, because z2mbridge keeps writing `availability` to it and every write
+        refreshes the comm time. So the 12-hour z2m staleness threshold could
+        never fire on ANY device: the one check meant to notice a dead Zigbee node
+        was inert, and only the availability flag ever caught one.
+
+        Safe to switch, measured before switching rather than after: over the
+        seven days to 18-09-2026 only 2 of 61 z2m devices had a silence longer
+        than 12 hours, and both were real faults (this sensor at 26.3 h in that
+        window, Hall-Bedroom Motion Sensor at 20.6 h). The contact sensors cap at
+        4.1 hours, so the default threshold keeps threefold headroom.
         """
-        if MONITORED_PLUGINS.get(pluginId) == "esphome":
+        if MONITORED_PLUGINS.get(pluginId) in ("esphome", "z2m"):
             raw = (states or {}).get("lastSeen")
             if raw:
                 for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
@@ -1032,23 +1054,93 @@ class Plugin(indigo.PluginBase):
         return True, f"{reason}; away {away:.1f}h (tolerance {tol:g}h)"
 
     def _check_z2m(self, dev):
-        # Trust comm freshness over the availability state: availability can sit
-        # stale at "online" after a bridge MQTT wedge (the Jane Lamp case,
-        # 29-05-2026), so check lastSuccessfulComm first, then fall back to the
-        # availability flag for devices z2m has actively marked offline.
-        last = dev.lastSuccessfulComm
+        # Check silence first: availability can sit stale at "online" after a
+        # bridge MQTT wedge (the Jane Lamp case, 29-05-2026), so a device that
+        # has stopped talking is reported whatever the flag says.
+        #
+        # The clock is the device's own `lastSeen`, NOT lastSuccessfulComm — see
+        # away_clock for the 18-09-2026 measurement that made this leg inert.
+        last = self.away_clock(dev.pluginId, getattr(dev, "states", None),
+                               dev.lastSuccessfulComm)
         if last is not None:
             thresh, quiet = self._threshold_for(dev, self.z2m_stale_hours)
             hours = self._hours_since(last)
             if thresh is not None and hours > thresh:
                 note = " — quiet device" if quiet else ""
-                return True, f"no comm for {hours:.1f}h (threshold {thresh:g}h{note})"
+                return True, f"not seen for {hours:.1f}h (threshold {thresh:g}h{note})"
         # A quiet device is exempt from SILENCE, never from a fault the stack has
         # actively reported. z2m marking it offline is exactly that.
         avail = dev.states.get("availability", "online")
         if avail == "offline":
-            return True, "availability=offline"
+            return self._z2m_offline_verdict(dev, last)
         return False, ""
+
+    def _z2m_offline_verdict(self, dev, last_seen):
+        """Should z2m's own offline flag be reported? (is_offline, reason)
+
+        A GRACE PERIOD, because the flag flaps. zigbee2mqtt pings a mains device
+        roughly every ten minutes and, with its `availability.active.timeout` at
+        the ten-minute default, a SINGLE lost packet declared the device offline.
+        Measured over the seven days to 18-09-2026: 41 offline reports across four
+        devices, 13 of them on 18-09 alone, each one its own Pushover — while
+        Clive Lamp, the SLZB-06P7 repeater and the Living Room Colour Lamp had
+        not been silent for more than 20 minutes once in that week. The flag was
+        right about Back Door Light (six silences, up to 109 minutes) and wrong
+        about everything else. (The z2m timeout was raised to 30 minutes the same
+        day; this grace is the independent half, so a bridge reconfigured back to
+        a hair trigger cannot resume paging on its own.)
+
+        The grace is measured against the device's OWN clock, never against a
+        count of our scans. A counter lives in memory, so a plugin restart would
+        reset it and a flapping device could sit inside a fresh grace period for
+        ever — the trap _apply_offline_tolerance's docstring already names.
+
+        No clock at all means report it: a device that has never published a
+        `lastSeen` has no start point to measure from, which is the same call
+        away_clock and _apply_offline_tolerance both make.
+        """
+        if self.z2m_offline_grace_min <= 0:
+            return True, "availability=offline"
+        if last_seen is None:
+            return True, ("availability=offline — no lastSeen to measure a grace "
+                          "period from")
+        quiet_min = self._hours_since(last_seen) * 60.0
+        if quiet_min < self.z2m_offline_grace_min:
+            if self.debug:
+                log(f"{dev.name}: z2m says offline but it was seen "
+                    f"{quiet_min:.1f} min ago — inside the "
+                    f"{self.z2m_offline_grace_min:g} min grace, holding off")
+            self._note_flap(dev)
+            return False, ""
+        return True, (f"availability=offline, and not seen for {quiet_min:.0f} min "
+                      f"(grace {self.z2m_offline_grace_min:g} min)")
+
+    # A device the grace holds back this often in one day is not healthy; it is
+    # flapping, which is a different fault and worth saying once.
+    FLAP_REPORT_THRESHOLD = 4
+
+    def _note_flap(self, dev):
+        """Count a held-back offline flag, and say so once a day if it mounts up.
+
+        A GRACE PERIOD THAT SUPPRESSES IN SILENCE IS A MUTE, and a mute is how
+        the estate hid 327 web-server errors for six weeks. So the held-back
+        verdicts are counted and reported — once per device per day, in the log
+        rather than by Pushover, because the whole point is to stop the phone
+        buzzing thirteen times for one loose light.
+        """
+        today = date.today().isoformat()
+        if self._flap_day != today:
+            self._flap_day    = today
+            self._flap_counts = {}
+            self._flap_said   = set()
+        self._flap_counts[dev.id] = self._flap_counts.get(dev.id, 0) + 1
+        count = self._flap_counts[dev.id]
+        if count >= self.FLAP_REPORT_THRESHOLD and dev.id not in self._flap_said:
+            self._flap_said.add(dev.id)
+            log(f"[FLAPPING] {dev.name}: zigbee2mqtt has called it offline "
+                f"{count} times today and it came back each time within the "
+                f"{self.z2m_offline_grace_min:g} min grace. Not paged as offline, "
+                f"but its radio link is worth a look.", level="WARNING")
 
     def _probe_quiet_zwave(self, dev, now=None):
         """Send a status request to a quiet mains Z-Wave node. Returns True if

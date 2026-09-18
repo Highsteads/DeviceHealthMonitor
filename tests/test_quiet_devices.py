@@ -141,7 +141,9 @@ def test_never_does_NOT_suppress_a_reported_fault(plugin_mod, plugin):
     dev = FakeDevice(1, "Cupboard", Z2M,
                      states={"availability": "offline"}, hours_since_comm=5000)
     plugin.quiet_by_id = {1: None}
-    assert plugin._check_z2m(dev) == (True, "availability=offline")
+    offline, reason = plugin._check_z2m(dev)
+    assert offline is True
+    assert "availability=offline" in reason
 
 
 # ------------------------------------------------- Z-Wave battery path

@@ -39,10 +39,29 @@ def ago(hours):
 # real API is worse than no fake at all.
 # ==========================================================================
 
+Z2M_PLUGIN_ID = "com.clives.indigoplugin.z2mbridge"
+
+
 class FakeDevice:
+    """A device as plugin.py sees one.
+
+    `hours_since_seen` fills the `lastSeen` STATE, which is the honest clock for
+    z2m and ESPHome (see plugin.away_clock). Left at None on a z2m device it
+    follows `hours_since_comm`, because a real z2m device publishes both and a
+    test asking for "last spoke N hours ago" means both.
+
+    THAT DEFAULT IS WHY THE INERT STALENESS LEG WENT UNNOTICED. Until 18-09-2026
+    these fixtures set only lastSuccessfulComm, so every z2m staleness test
+    passed against a device shape that does not occur in the house: in the real
+    thing z2mbridge rewrites `availability` on a dead device and Indigo refreshes
+    its comm time on that write, so comm age stays near zero for ever. A fixture
+    that cannot express the fault cannot fail on it — set `hours_since_seen`
+    ABOVE `hours_since_comm` to reproduce it.
+    """
+
     def __init__(self, dev_id, name, plugin_id, states=None, hours_since_comm=None,
                  hours_since_changed=None, battery=None, error_state="",
-                 enabled=True, configured=True):
+                 enabled=True, configured=True, hours_since_seen=None):
         self.id         = dev_id
         self.name       = name
         self.pluginId   = plugin_id
@@ -55,6 +74,10 @@ class FakeDevice:
                                    else ago(hours_since_comm))
         self.lastChanged        = (None if hours_since_changed is None
                                    else ago(hours_since_changed))
+        if hours_since_seen is None and plugin_id == Z2M_PLUGIN_ID:
+            hours_since_seen = hours_since_comm
+        if hours_since_seen is not None and "lastSeen" not in self.states:
+            self.states["lastSeen"] = ago(hours_since_seen).strftime("%Y-%m-%d %H:%M:%S")
 
 
 class FakeCollection(dict):
