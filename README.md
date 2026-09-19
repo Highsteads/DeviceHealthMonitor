@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.10.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.10.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -151,6 +151,8 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.10.1** - **Asking a device was being mistaken for good news about it.** While a device is being asked whether it is there, the answer is not yet known - but the scan treated that as a clean bill of health, so anything already on the outstanding list was announced as recovered on the strength of a question nobody had answered, and then reported again as a fresh fault the next time round. Caught on the first scan after yesterday's release, which announced a node as recovered that had in fact been silent for nine days. A scan that has only asked now says nothing at all about the device and leaves it exactly as it was.
 
 **v2.10.0** - **A mains Zigbee device is now asked whether it is there before it is called offline.** Yesterday's grace period was not enough, and the morning after proved it: your bedside lamp was reported offline at 07:12 and you had it dimming to 12% a minute later. The reason is that zigbee2mqtt's ping to an idle lamp is the only traffic it ever gets, so raising the timeout to half an hour also stretched the ping to half an hour - and one lost ping still declared the lamp missing. The grace could never help, because by the time the flag exists the half hour has already passed.
 

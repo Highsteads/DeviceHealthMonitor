@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        13-09-2026
-# Version:     2.10.0
+# Version:     2.10.1
 #
 # v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
 # Backup (stale_minutes: None) — see the comment beside it. Found by the
@@ -282,7 +282,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.10.0"
+PLUGIN_VERSION = "2.10.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -1134,7 +1134,16 @@ class Plugin(indigo.PluginBase):
             log(f"{dev.name}: z2m says offline — asked it directly "
                 f"(read {strikes} of {self.Z2M_PROBE_STRIKES}), holding off")
         self._note_flap(dev)
-        return False, ""
+        # NO VERDICT YET — deliberately not (False, ""), which would mean HEALTHY.
+        # A device already latched as offline would then be announced as
+        # [RECOVERED] on the strength of a question nobody has answered, and
+        # reported again as new the next scan: a spurious recovery and a spurious
+        # alert for a device that never moved. Live-hit on the very first scan
+        # after installing 2.10.0 — `[RECOVERED] 0xf84477fffe0a931d`, a node that
+        # had then been silent 230 hours. None is the channel _run_scan already
+        # has for "no opinion": it skips the device entirely, so the latch is
+        # neither set nor cleared and an undelivered alert stays pending.
+        return None, None
 
     def _z2m_probe(self, dev):
         """Send a status request, which z2mbridge services with a z2m `/get`.

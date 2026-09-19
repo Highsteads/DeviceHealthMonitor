@@ -263,7 +263,7 @@ def battery_offline(dev_id=9, name="Dining Room Temperature and Humidity Sensor"
 
 def test_a_mains_device_is_asked_before_it_is_accused(plugin, indigo_mod):
     dev = mains_offline()
-    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev) == (None, None)
     assert indigo_mod.device.status_requests == [1]
 
 
@@ -289,10 +289,10 @@ def test_a_device_that_spoke_since_we_asked_starts_again_from_one(plugin):
     version of this test survived a mutation that removed the reset.
     """
     dev = mains_offline(seen_hours=90 / 60)
-    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev) == (None, None)
     assert plugin._z2m_probes[1]["strikes"] == 1
     dev.states["lastSeen"] = _stamp_minutes_ago(40)     # answered, still past grace
-    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev) == (None, None)
     assert plugin._z2m_probes[1]["strikes"] == 1
 
 
@@ -300,9 +300,11 @@ def test_a_device_that_keeps_answering_is_never_accused(plugin):
     """Ten rounds, answering each time, always past the grace."""
     dev = mains_offline(seen_hours=90 / 60)
     for minutes in range(40, 50):
-        assert plugin._check_z2m(dev) == (False, "")
+        assert plugin._check_z2m(dev) == (None, None)
         dev.states["lastSeen"] = _stamp_minutes_ago(minutes)
-    assert plugin._check_z2m(dev)[0] is False
+    # Never ACCUSED — the verdict is "no opinion, asking again", which is not the
+    # same as a clean bill and must not be asserted as one.
+    assert plugin._check_z2m(dev) == (None, None)
 
 
 def test_a_battery_device_is_never_probed_and_is_reported_at_once(plugin, indigo_mod):
@@ -331,7 +333,7 @@ def test_a_probe_that_will_not_send_is_the_answer_not_an_error(plugin, indigo_mo
     counts as a failed read rather than taking the health check down."""
     indigo_mod.device.raise_on_status = RuntimeError("no such device")
     dev = mains_offline()
-    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev) == (None, None)
     assert plugin._check_z2m(dev)[0] is True
 
 
@@ -340,7 +342,7 @@ def test_the_stale_leg_is_probed_too(plugin, indigo_mod):
     flagged — the rule is one sentence, applied wherever the verdict is made."""
     dev = FakeDevice(1, "Quiet Mains Light", Z2M, states={"availability": "online"},
                      hours_since_comm=0.05, hours_since_seen=13)
-    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev) == (None, None)
     assert indigo_mod.device.status_requests == [1]
     offline, reason = plugin._check_z2m(dev)
     assert offline is True
@@ -350,3 +352,40 @@ def test_the_stale_leg_is_probed_too(plugin, indigo_mod):
 def _stamp_minutes_ago(minutes):
     from datetime import datetime, timedelta
     return (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")
+
+
+# --------------------------- a hold is not a recovery (v2.10.1)
+
+def test_a_hold_is_no_verdict_rather_than_a_clean_bill(plugin):
+    """(None, None), never (False, ""). _run_scan skips a None entirely, so a
+    latched device is neither un-latched nor re-reported while we wait."""
+    assert plugin._check_z2m(mains_offline()) == (None, None)
+
+
+def test_a_latched_device_is_not_announced_recovered_while_being_asked(
+        plugin, plugin_mod, pushover):
+    """Live-hit on the first scan after installing 2.10.0: `[RECOVERED]
+    0xf84477fffe0a931d` for a node that had been silent 230 hours. A hold read as
+    health, so the latch cleared and the next scan reported it as new — a spurious
+    recovery and a spurious alert for a device that never moved."""
+    dev = mains_offline(seen_hours=230)
+    plugin_mod.indigo.devices[1] = dev
+    plugin.alerted[1] = __import__("datetime").datetime.now()   # as restored at startup
+    plugin._run_scan()
+    assert 1 in plugin.alerted, "the latch must survive a scan that only asked"
+    assert pushover.sent == []
+    assert not [m for m in plugin_mod.indigo.server.lines if "RECOVERED" in m[0]]
+
+
+def test_it_still_reports_recovered_when_the_device_really_comes_back(
+        plugin, plugin_mod, pushover):
+    """The other half — a hold must not become a latch that nothing can clear."""
+    dev = mains_offline(seen_hours=230)
+    plugin_mod.indigo.devices[1] = dev
+    plugin.alerted[1] = __import__("datetime").datetime.now()
+    plugin._run_scan()                                  # asked, held
+    dev.states["availability"] = "online"
+    dev.states["lastSeen"] = _stamp_minutes_ago(1)      # genuinely back
+    plugin._run_scan()
+    assert 1 not in plugin.alerted
+    assert [m for m in plugin_mod.indigo.server.lines if "RECOVERED" in m[0]]
