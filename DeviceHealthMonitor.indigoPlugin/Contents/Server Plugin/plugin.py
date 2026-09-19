@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        13-09-2026
-# Version:     2.10.1
+# Version:     2.10.2
 #
 # v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
 # Backup (stale_minutes: None) — see the comment beside it. Found by the
@@ -282,7 +282,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.10.1"
+PLUGIN_VERSION = "2.10.2"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -1115,7 +1115,7 @@ class Plugin(indigo.PluginBase):
         which is what z2m's 25-hour passive timeout is for. Probing them would
         turn the check into a coin toss.
         """
-        if getattr(dev, "batteryLevel", None) is not None:
+        if self._sleeps_by_design(dev):
             return True, reason            # asleep by design; a read proves nothing
         seen_now = str((getattr(dev, "states", None) or {}).get("lastSeen", ""))
         entry    = self._z2m_probes.get(dev.id)
@@ -1144,6 +1144,40 @@ class Plugin(indigo.PluginBase):
         # has for "no opinion": it skips the device entirely, so the latch is
         # neither set nor cleared and an undelivered alert stays pending.
         return None, None
+
+    # z2m's own word for a sleeping device. Read from globalProps, because
+    # pluginProps reads back EMPTY for another plugin's device.
+    Z2M_PLUGIN_ID = "com.clives.indigoplugin.z2mbridge"
+
+    def _sleeps_by_design(self, dev):
+        """Is this device one a direct read cannot reach? (bool)
+
+        TWO SIGNALS, AND NEITHER IS RELIABLE ALONE — measured across all 61 z2m
+        devices on 19-09-2026, so the union is a decision rather than a guess.
+
+        `batteryLevel` is None until the device has actually REPORTED a level, and
+        three devices here are in that state: a Shelly BLU RC Button that half-
+        joined on 09-09 and has never sent one, the Dining Room Presence Sensor,
+        and Living Room Main Light. The button is exactly the case that matters —
+        z2m calls it `EndDevice` / `Battery`, so probing it measures nothing, yet
+        it was being probed and reported as having "ignored 2 direct reads", which
+        is a claim the probe cannot support about a device that was asleep.
+
+        z2m's `power_source` is wrong the other way on ONE device: Living Room Main
+        Light is a Tuya TS0011 mains switch module and z2m reports it as Battery.
+        Taking the union therefore stops probing one genuinely mains device, which
+        costs it nothing worse than the pre-2.10.0 behaviour — judged on silence
+        against the 12-hour threshold, and it normally reports every ten minutes.
+        Erring this way is deliberate: a read that cannot land must not become
+        evidence, and that principle outranks probing one extra light.
+        """
+        if getattr(dev, "batteryLevel", None) is not None:
+            return True
+        try:
+            props = dev.globalProps.get(self.Z2M_PLUGIN_ID, {})
+            return str(props.get("power_source", "")).strip().lower() == "battery"
+        except Exception:
+            return False           # no props to read is not a reason to stop checking
 
     def _z2m_probe(self, dev):
         """Send a status request, which z2mbridge services with a z2m `/get`.

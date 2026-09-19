@@ -61,7 +61,8 @@ class FakeDevice:
 
     def __init__(self, dev_id, name, plugin_id, states=None, hours_since_comm=None,
                  hours_since_changed=None, battery=None, error_state="",
-                 enabled=True, configured=True, hours_since_seen=None):
+                 enabled=True, configured=True, hours_since_seen=None,
+                 global_props=None):
         self.id         = dev_id
         self.name       = name
         self.pluginId   = plugin_id
@@ -74,6 +75,10 @@ class FakeDevice:
                                    else ago(hours_since_comm))
         self.lastChanged        = (None if hours_since_changed is None
                                    else ago(hours_since_changed))
+        # Foreign props as Indigo hands them over: globalProps, keyed by plugin id.
+        # pluginProps reads back EMPTY for another plugin's device, so the real code
+        # cannot use it and neither does this fake.
+        self.globalProps = {plugin_id: dict(global_props or {})}
         if hours_since_seen is None and plugin_id == Z2M_PLUGIN_ID:
             hours_since_seen = hours_since_comm
         if hours_since_seen is not None and "lastSeen" not in self.states:

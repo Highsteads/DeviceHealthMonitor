@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.10.1 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.10.2 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -151,6 +151,8 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.10.2** - **A sleeping Zigbee button was being asked a question it cannot hear, and then blamed for not answering.** A device is left out of the direct-read check when it runs on a battery, because a sleeping device cannot answer. That test relied on the device having reported a battery level at some point - and a Shelly four-button remote here joined the network back in September without ever finishing its setup, so it has never reported one. It was therefore asked twice and reported as having ignored both requests, which is not something you can say about a device that was asleep. Zigbee2MQTT's own word for how a device is powered is now taken as well, so a device either side of that gap is left alone. The verdict for that button is unchanged - it really has gone - but the reason given for it is now true.
 
 **v2.10.1** - **Asking a device was being mistaken for good news about it.** While a device is being asked whether it is there, the answer is not yet known - but the scan treated that as a clean bill of health, so anything already on the outstanding list was announced as recovered on the strength of a question nobody had answered, and then reported again as a fresh fault the next time round. Caught on the first scan after yesterday's release, which announced a node as recovered that had in fact been silent for nine days. A scan that has only asked now says nothing at all about the device and leaves it exactly as it was.
 

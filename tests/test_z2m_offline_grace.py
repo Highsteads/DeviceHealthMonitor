@@ -389,3 +389,69 @@ def test_it_still_reports_recovered_when_the_device_really_comes_back(
     plugin._run_scan()
     assert 1 not in plugin.alerted
     assert [m for m in plugin_mod.indigo.server.lines if "RECOVERED" in m[0]]
+
+
+# ------------------- which devices a read cannot reach (v2.10.2)
+
+def test_a_device_z2m_calls_battery_is_not_probed_even_with_no_battery_reading(
+        plugin, indigo_mod):
+    """The Shelly BLU RC Button, live on 19-09-2026. It half-joined on 09-09, its
+    interview failed six times, and it has never reported a battery level — so
+    `batteryLevel` is None while z2m calls it EndDevice / Battery. It was being
+    probed and reported as having "ignored 2 direct reads", which is a claim the
+    probe cannot support about a device that was asleep."""
+    dev = FakeDevice(1, "0xf84477fffe0a931d", Z2M,
+                     states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=230,
+                     global_props={"power_source": "Battery",
+                                   "friendly_name": "0xf84477fffe0a931d"})
+    assert getattr(dev, "batteryLevel", None) is None, "the whole point of the case"
+    offline, reason = plugin._check_z2m(dev)
+    assert offline is True
+    assert "direct reads" not in reason
+    assert indigo_mod.device.status_requests == []
+
+
+def test_a_mains_device_with_no_power_source_prop_is_still_probed(plugin, indigo_mod):
+    """The union must not swallow the ordinary case."""
+    dev = FakeDevice(1, "Back Door Light", Z2M, states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=2,
+                     global_props={"power_source": "Mains (single phase)"})
+    assert plugin._check_z2m(dev) == (None, None)
+    assert indigo_mod.device.status_requests == [1]
+
+
+def test_the_power_source_test_is_case_and_space_tolerant(plugin, indigo_mod):
+    dev = FakeDevice(1, "Odd Props", Z2M, states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=230,
+                     global_props={"power_source": "  battery  "})
+    assert plugin._check_z2m(dev)[0] is True
+    assert indigo_mod.device.status_requests == []
+
+
+def test_a_device_with_no_props_at_all_is_still_probed(plugin, indigo_mod):
+    """No props to read is not a reason to stop checking a device."""
+    dev = FakeDevice(1, "Bare", Z2M, states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=2)
+    dev.globalProps = {}
+    assert plugin._check_z2m(dev) == (None, None)
+    assert indigo_mod.device.status_requests == [1]
+
+
+def test_a_battery_reading_still_counts_on_its_own(plugin, indigo_mod):
+    """The original signal keeps working where z2m says nothing."""
+    dev = FakeDevice(1, "Sleepy", Z2M, battery=49, states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=67)
+    assert plugin._check_z2m(dev)[0] is True
+    assert indigo_mod.device.status_requests == []
+
+
+def test_a_device_object_with_no_globalProps_attribute_is_still_probed(plugin, indigo_mod):
+    """The except branch, which the empty-dict case above cannot reach — a dict
+    answers .get() without raising. A device object that has no globalProps at all
+    must fall back to probing rather than take the health check down."""
+    dev = FakeDevice(1, "No Props At All", Z2M, states={"availability": "offline"},
+                     hours_since_comm=0.05, hours_since_seen=2)
+    del dev.globalProps
+    assert plugin._check_z2m(dev) == (None, None)
+    assert indigo_mod.device.status_requests == [1]
