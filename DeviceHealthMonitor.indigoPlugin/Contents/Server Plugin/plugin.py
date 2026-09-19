@@ -6,7 +6,7 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Sonnet 5
 # Date:        13-09-2026
-# Version:     2.9.0
+# Version:     2.10.0
 #
 # v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
 # Backup (stale_minutes: None) — see the comment beside it. Found by the
@@ -282,7 +282,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.9.0"
+PLUGIN_VERSION = "2.10.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -681,6 +681,10 @@ class Plugin(indigo.PluginBase):
         # When each quiet mains Z-Wave node was last poked. In memory only:
         # a restart re-probes them all, which is ~10 frames and costs nothing.
         self._zwave_probed: dict[int, datetime] = {}
+        # z2m device_id -> {"seen": lastSeen when we last asked, "strikes": int}.
+        # In memory only, like _zwave_probed: a restart re-asks every flagged
+        # device, which costs a handful of frames and cannot suppress anything.
+        self._z2m_probes: dict[int, dict] = {}
         self._restore_alerted()
         # Device ids whose alert we could not deliver — so a Pushover outage keeps
         # retrying instead of latching the device as "already alerted" (see _run_scan).
@@ -1067,13 +1071,82 @@ class Plugin(indigo.PluginBase):
             hours = self._hours_since(last)
             if thresh is not None and hours > thresh:
                 note = " — quiet device" if quiet else ""
-                return True, f"not seen for {hours:.1f}h (threshold {thresh:g}h{note})"
+                return self._z2m_probe_verdict(
+                    dev, f"not seen for {hours:.1f}h (threshold {thresh:g}h{note})")
         # A quiet device is exempt from SILENCE, never from a fault the stack has
         # actively reported. z2m marking it offline is exactly that.
         avail = dev.states.get("availability", "online")
         if avail == "offline":
-            return self._z2m_offline_verdict(dev, last)
+            verdict, reason = self._z2m_offline_verdict(dev, last)
+            if not verdict:
+                return verdict, reason
+            return self._z2m_probe_verdict(dev, reason)
+        self._z2m_probes.pop(dev.id, None)
         return False, ""
+
+    # A mains device that ignores two direct reads in a row is not there. One
+    # failed read is a collision; two, ten minutes apart, is an absence.
+    Z2M_PROBE_STRIKES = 2
+
+    def _z2m_probe_verdict(self, dev, reason):
+        """Ask the device directly before accusing it. (is_offline, reason)
+
+        SILENCE IS NOT THE VERDICT ON A MAINS DEVICE — the same finding as
+        zwave_probe_due, arrived at for Zigbee on 19-09-2026 and for the same
+        reason: the thing that looked like evidence was really an absence of
+        questions. z2m's availability ping is its ONLY traffic to an idle lamp,
+        so raising `active.timeout` to 30 minutes on 18-09 also stretched the ping
+        to 30 minutes — and one lost ping still declared the device offline. The
+        30-minute grace added the night before could therefore never fire: by the
+        time the flag exists, 30 minutes of silence has passed by construction.
+        Measured that morning — Clive Lamp paged at 07:12 "not seen for 37 min",
+        and CliveS had it dimming to 12% at 07:13.
+
+        A `/get` settles it in seconds. Measured 19-09-2026, three lamps, all
+        answering within six seconds of a statusRequest: Back Door Light had been
+        silent 29 minutes and replied at once, so its silence was z2m not asking
+        rather than the bulb not being there.
+
+        BATTERY DEVICES ARE SKIPPED, and the negative control is what says so. A
+        sleeping device cannot answer a read, so the probe proves nothing either
+        way: the two genuinely dead devices here (a battery sensor silent 67 h and
+        an uninterviewed node silent 222 h) did not budge, and neither did two
+        perfectly healthy battery sensors. For those, silence is all there is —
+        which is what z2m's 25-hour passive timeout is for. Probing them would
+        turn the check into a coin toss.
+        """
+        if getattr(dev, "batteryLevel", None) is not None:
+            return True, reason            # asleep by design; a read proves nothing
+        seen_now = str((getattr(dev, "states", None) or {}).get("lastSeen", ""))
+        entry    = self._z2m_probes.get(dev.id)
+        # A probe that LANDS makes the device answer, which moves lastSeen. If it
+        # has not moved since we asked, the probe went nowhere — the same test
+        # zwave_probe_strikes makes against lastSuccessfulComm.
+        if entry is not None and entry["seen"] == seen_now:
+            strikes = entry["strikes"] + 1
+        else:
+            strikes = 1
+        self._z2m_probes[dev.id] = {"seen": seen_now, "strikes": strikes}
+        self._z2m_probe(dev)
+        if strikes >= self.Z2M_PROBE_STRIKES:
+            return True, f"{reason}; ignored {strikes} direct reads"
+        if self.debug:
+            log(f"{dev.name}: z2m says offline — asked it directly "
+                f"(read {strikes} of {self.Z2M_PROBE_STRIKES}), holding off")
+        self._note_flap(dev)
+        return False, ""
+
+    def _z2m_probe(self, dev):
+        """Send a status request, which z2mbridge services with a z2m `/get`.
+
+        Never raises: a probe failing to send IS the answer, and the strike count
+        already carries it. Same contract as _probe_quiet_zwave.
+        """
+        try:
+            indigo.device.statusRequest(dev.id)
+        except Exception as e:
+            if self.debug:
+                log(f"{dev.name}: status request would not send — {e}")
 
     def _z2m_offline_verdict(self, dev, last_seen):
         """Should z2m's own offline flag be reported? (is_offline, reason)
@@ -1138,9 +1211,9 @@ class Plugin(indigo.PluginBase):
         if count >= self.FLAP_REPORT_THRESHOLD and dev.id not in self._flap_said:
             self._flap_said.add(dev.id)
             log(f"[FLAPPING] {dev.name}: zigbee2mqtt has called it offline "
-                f"{count} times today and it came back each time within the "
-                f"{self.z2m_offline_grace_min:g} min grace. Not paged as offline, "
-                f"but its radio link is worth a look.", level="WARNING")
+                f"{count} times today and it answered every time we asked. Not "
+                f"paged as offline, but its radio link is worth a look.",
+                level="WARNING")
 
     def _probe_quiet_zwave(self, dev, now=None):
         """Send a status request to a quiet mains Z-Wave node. Returns True if

@@ -7,7 +7,7 @@
 #              the clock swap that made the staleness threshold work at all.
 # Author:      CliveS & Claude Opus 5
 # Date:        18-09-2026
-# Version:     1.0
+# Version:     2.0
 #
 # Why this file exists (measured 18-09-2026):
 # * zigbee2mqtt pings a mains device about every ten minutes and, with its
@@ -43,6 +43,20 @@ def offline_dev(dev_id=1, name="Back Door Light", seen_hours=0.1, comm_hours=0.0
                       hours_since_comm=comm_hours, hours_since_seen=seen_hours)
 
 
+def verdict(plugin, dev, scans=2):
+    """The verdict after `scans` consecutive scans with the device still silent.
+
+    A mains device is ASKED before it is accused (v2.10.0), so one scan can only
+    ever hold. Anything testing "this gets reported" has to drive the second scan
+    — which is the behaviour, not a test artefact: a real dead device is paged ten
+    minutes later than it used to be, and a device that answers is never paged.
+    """
+    out = (None, None)
+    for _ in range(scans):
+        out = plugin._check_z2m(dev)
+    return out
+
+
 # ------------------------------------------------------- the grace itself
 
 def test_a_flag_on_a_device_seen_moments_ago_is_held_back(plugin):
@@ -52,19 +66,20 @@ def test_a_flag_on_a_device_seen_moments_ago_is_held_back(plugin):
 
 def test_a_flag_on_a_device_silent_past_the_grace_is_reported(plugin):
     """The Back Door Light case: genuinely quiet for 109 minutes."""
-    offline, reason = plugin._check_z2m(offline_dev(seen_hours=109 / 60))
+    offline, reason = verdict(plugin, offline_dev(seen_hours=109 / 60))
     assert offline is True
     assert "availability=offline" in reason
     assert "109 min" in reason
     assert "grace 30 min" in reason
+    assert "ignored 2 direct reads" in reason
 
 
 def test_the_grace_boundary_is_the_configured_number_of_minutes(plugin):
     """29 minutes held, 31 reported. The two dropout populations measured on
     18-09-2026 sit either side of 30: 20 minutes and under were false, 39 and
     over were real."""
-    assert plugin._check_z2m(offline_dev(seen_hours=29 / 60))[0] is False
-    assert plugin._check_z2m(offline_dev(seen_hours=31 / 60))[0] is True
+    assert verdict(plugin, offline_dev(seen_hours=29 / 60))[0] is False
+    assert verdict(plugin, offline_dev(2, seen_hours=31 / 60))[0] is True
 
 
 def test_the_grace_is_configurable(plugin_mod, prefs):
@@ -72,14 +87,16 @@ def test_the_grace_is_configurable(plugin_mod, prefs):
     p = plugin_mod.Plugin("com.clives.indigoplugin.device-health-monitor",
                           "Device Health Monitor", "2.9.0", prefs)
     assert p.z2m_offline_grace_min == 5.0
-    assert p._check_z2m(offline_dev(seen_hours=10 / 60))[0] is True
+    assert verdict(p, offline_dev(seen_hours=10 / 60))[0] is True
 
 
 def test_zero_disables_the_grace_and_pages_on_the_raw_flag(plugin_mod, prefs):
     prefs["z2mOfflineGraceMinutes"] = "0"
     p = plugin_mod.Plugin("com.clives.indigoplugin.device-health-monitor",
                           "Device Health Monitor", "2.9.0", prefs)
-    assert p._check_z2m(offline_dev(seen_hours=0.01)) == (True, "availability=offline")
+    offline, reason = verdict(p, offline_dev(seen_hours=0.01))
+    assert offline is True
+    assert reason.startswith("availability=offline")
 
 
 @pytest.mark.parametrize("bad", ["", "   ", "soon", None, "-"])
@@ -98,7 +115,7 @@ def test_a_device_with_no_lastSeen_at_all_is_reported_immediately(plugin):
     dev = FakeDevice(1, "Never Spoke", Z2M, states={"availability": "offline"},
                      hours_since_comm=0.05, hours_since_seen=None)
     dev.states.pop("lastSeen", None)
-    offline, reason = plugin._check_z2m(dev)
+    offline, reason = verdict(plugin, dev)
     assert offline is True
     assert "no lastSeen" in reason
 
@@ -107,7 +124,7 @@ def test_an_unparseable_lastSeen_is_reported_rather_than_guessed(plugin):
     dev = FakeDevice(1, "Odd Clock", Z2M,
                      states={"availability": "offline", "lastSeen": "yesterday"},
                      hours_since_comm=0.05)
-    offline, reason = plugin._check_z2m(dev)
+    offline, reason = verdict(plugin, dev)
     assert offline is True
     assert "no lastSeen" in reason
 
@@ -129,7 +146,7 @@ def test_staleness_now_measures_lastSeen_not_the_comm_time(plugin):
     dev = FakeDevice(1, "Dining Room Temperature and Humidity Sensor", Z2M,
                      states={"availability": "online"},
                      hours_since_comm=0.08, hours_since_seen=67.2)
-    offline, reason = plugin._check_z2m(dev)
+    offline, reason = verdict(plugin, dev)
     assert offline is True
     assert "not seen for 67" in reason
     assert "threshold 12h" in reason
@@ -147,7 +164,7 @@ def test_silence_is_reported_whatever_the_flag_says(plugin):
     case of 29-05-2026. Silence still wins."""
     dev = FakeDevice(1, "Wedged", Z2M, states={"availability": "online"},
                      hours_since_comm=0.05, hours_since_seen=40)
-    assert plugin._check_z2m(dev)[0] is True
+    assert verdict(plugin, dev)[0] is True
 
 
 # ------------------------------------------- the grace must not be a mute
@@ -207,7 +224,7 @@ def test_a_reported_offline_device_is_not_counted_as_flapping(plugin, indigo_mod
     """Flapping is what the grace HELD BACK. A device past the grace is paged as
     offline, and counting it here as well would say it twice."""
     dev = offline_dev(seen_hours=200 / 60)
-    for _ in range(plugin.FLAP_REPORT_THRESHOLD * 2):
+    for _ in range(plugin.FLAP_REPORT_THRESHOLD * 2 + 2):
         plugin._check_z2m(dev)
     assert not [m for m in indigo_mod.server.messages_at(30)          # logging.WARNING
                 if "[FLAPPING]" in m]
@@ -224,7 +241,112 @@ def test_the_scan_does_not_page_for_a_device_inside_the_grace(plugin, plugin_mod
 
 def test_the_scan_does_page_for_a_device_past_the_grace(plugin, plugin_mod, pushover):
     plugin_mod.indigo.devices[1] = offline_dev(seen_hours=2)
-    plugin._run_scan()
+    plugin._run_scan()          # asks it
+    plugin._run_scan()          # no answer, so now it is paged
     assert len(pushover.sent) == 1
     assert "Back Door Light" in str(pushover.sent[0])
     assert 1 in plugin.alerted
+
+
+# ------------------------------------------- asking before accusing (v2.10.0)
+
+def mains_offline(dev_id=1, name="Back Door Light", seen_hours=2):
+    return offline_dev(dev_id, name, seen_hours=seen_hours)
+
+
+def battery_offline(dev_id=9, name="Dining Room Temperature and Humidity Sensor",
+                    seen_hours=67.2):
+    return FakeDevice(dev_id, name, Z2M, battery=49,
+                      states={"availability": "offline"},
+                      hours_since_comm=0.08, hours_since_seen=seen_hours)
+
+
+def test_a_mains_device_is_asked_before_it_is_accused(plugin, indigo_mod):
+    dev = mains_offline()
+    assert plugin._check_z2m(dev) == (False, "")
+    assert indigo_mod.device.status_requests == [1]
+
+
+def test_it_is_accused_once_it_has_ignored_two_reads(plugin, indigo_mod):
+    dev = mains_offline()
+    plugin._check_z2m(dev)
+    offline, reason = plugin._check_z2m(dev)
+    assert offline is True
+    assert "ignored 2 direct reads" in reason
+    assert indigo_mod.device.status_requests == [1, 1]
+
+
+def test_a_device_that_spoke_since_we_asked_starts_again_from_one(plugin):
+    """The whole point: Clive Lamp was paged at 07:12 and dimming at 07:13.
+
+    Strikes count reads that went NOWHERE, so a device that has spoken since we
+    asked starts again from one — otherwise a device answering every single time
+    would still be accused in the end.
+
+    THE DEVICE IS KEPT PAST THE GRACE ON PURPOSE. Moving lastSeen to a few seconds
+    ago makes the grace hold it before the probe logic is ever reached, so the test
+    passes whatever the strike counter does — which is exactly how an earlier
+    version of this test survived a mutation that removed the reset.
+    """
+    dev = mains_offline(seen_hours=90 / 60)
+    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._z2m_probes[1]["strikes"] == 1
+    dev.states["lastSeen"] = _stamp_minutes_ago(40)     # answered, still past grace
+    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._z2m_probes[1]["strikes"] == 1
+
+
+def test_a_device_that_keeps_answering_is_never_accused(plugin):
+    """Ten rounds, answering each time, always past the grace."""
+    dev = mains_offline(seen_hours=90 / 60)
+    for minutes in range(40, 50):
+        assert plugin._check_z2m(dev) == (False, "")
+        dev.states["lastSeen"] = _stamp_minutes_ago(minutes)
+    assert plugin._check_z2m(dev)[0] is False
+
+
+def test_a_battery_device_is_never_probed_and_is_reported_at_once(plugin, indigo_mod):
+    """A sleeping device cannot answer a read, so the probe proves nothing either
+    way. Measured 19-09-2026: two healthy battery sensors and two genuinely dead
+    devices ALL failed to move lastSeen when asked. Silence is all there is here,
+    which is what z2m's 25-hour passive timeout is for."""
+    offline, reason = plugin._check_z2m(battery_offline())
+    assert offline is True
+    assert "direct reads" not in reason
+    assert indigo_mod.device.status_requests == []
+
+
+def test_a_healthy_device_clears_its_probe_record(plugin):
+    dev = mains_offline()
+    plugin._check_z2m(dev)
+    assert 1 in plugin._z2m_probes
+    dev.states["availability"] = "online"
+    dev.states["lastSeen"] = _stamp_minutes_ago(1)
+    plugin._check_z2m(dev)
+    assert 1 not in plugin._z2m_probes
+
+
+def test_a_probe_that_will_not_send_is_the_answer_not_an_error(plugin, indigo_mod):
+    """A statusRequest Indigo refuses is a device that cannot be reached, so it
+    counts as a failed read rather than taking the health check down."""
+    indigo_mod.device.raise_on_status = RuntimeError("no such device")
+    dev = mains_offline()
+    assert plugin._check_z2m(dev) == (False, "")
+    assert plugin._check_z2m(dev)[0] is True
+
+
+def test_the_stale_leg_is_probed_too(plugin, indigo_mod):
+    """A mains device unseen for 13 hours gets the same courtesy as one z2m has
+    flagged — the rule is one sentence, applied wherever the verdict is made."""
+    dev = FakeDevice(1, "Quiet Mains Light", Z2M, states={"availability": "online"},
+                     hours_since_comm=0.05, hours_since_seen=13)
+    assert plugin._check_z2m(dev) == (False, "")
+    assert indigo_mod.device.status_requests == [1]
+    offline, reason = plugin._check_z2m(dev)
+    assert offline is True
+    assert "not seen for 13" in reason and "ignored 2 direct reads" in reason
+
+
+def _stamp_minutes_ago(minutes):
+    from datetime import datetime, timedelta
+    return (datetime.now() - timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M:%S")

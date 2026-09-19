@@ -14,12 +14,16 @@ Z2M = "com.clives.indigoplugin.z2mbridge"
 
 
 def offline_device(dev_id=1, name="Dead Sensor", hours=100):
-    return FakeDevice(dev_id, name, Z2M,
+    # battery=, so this stands in for a device that is reported WITHOUT being
+    # probed first. A mains z2m device is asked directly before it is accused
+    # (v2.10.0) and so needs two scans; these tests are about the latch, not
+    # about Zigbee, and a sleeping sensor is the honest one-scan case.
+    return FakeDevice(dev_id, name, Z2M, battery=50,
                       states={"availability": "online"}, hours_since_comm=hours)
 
 
 def healthy_device(dev_id=1, name="Dead Sensor"):
-    return FakeDevice(dev_id, name, Z2M,
+    return FakeDevice(dev_id, name, Z2M, battery=50,
                       states={"availability": "online"}, hours_since_comm=1)
 
 

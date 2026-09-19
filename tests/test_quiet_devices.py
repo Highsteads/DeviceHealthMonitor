@@ -97,15 +97,20 @@ def test_a_quiet_threshold_may_be_TIGHTER_than_the_default(plugin_mod):
 
 # --------------------------------------------------------- z2m check path
 
+# Every device here carries a battery, which is both true to life (they are
+# cupboard and presence sensors) and what keeps these one-scan checks. A MAINS z2m
+# device is asked directly before it is accused (v2.10.0) and so needs two scans;
+# a sleeping device cannot answer a read, so it is reported on silence alone.
+
 def test_quiet_z2m_device_is_not_offline_inside_its_window(plugin_mod, plugin):
-    dev = FakeDevice(1035480788, "Bathroom Cupboard", Z2M,
+    dev = FakeDevice(1035480788, "Bathroom Cupboard", Z2M, battery=100,
                      states={"availability": "online"}, hours_since_comm=56)
     plugin.quiet_by_id = {1035480788: 240.0}
     assert plugin._check_z2m(dev) == (False, "")
 
 
 def test_quiet_z2m_device_still_alerts_once_past_its_own_window(plugin_mod, plugin):
-    dev = FakeDevice(1, "Cupboard", Z2M,
+    dev = FakeDevice(1, "Cupboard", Z2M, battery=100,
                      states={"availability": "online"}, hours_since_comm=241)
     plugin.quiet_by_id = {1: 240.0}
     offline, reason = plugin._check_z2m(dev)
@@ -114,14 +119,14 @@ def test_quiet_z2m_device_still_alerts_once_past_its_own_window(plugin_mod, plug
 
 
 def test_quiet_z2m_device_below_its_window_names_the_overridden_threshold(plugin_mod, plugin):
-    dev = FakeDevice(1, "Cupboard", Z2M,
+    dev = FakeDevice(1, "Cupboard", Z2M, battery=100,
                      states={"availability": "online"}, hours_since_comm=239)
     plugin.quiet_by_id = {1: 240.0}
     assert plugin._check_z2m(dev) == (False, "")
 
 
 def test_a_normal_z2m_device_is_unaffected(plugin_mod, plugin):
-    dev = FakeDevice(2, "Normal", Z2M,
+    dev = FakeDevice(2, "Normal", Z2M, battery=100,
                      states={"availability": "online"}, hours_since_comm=13)
     offline, reason = plugin._check_z2m(dev)
     assert offline
@@ -129,7 +134,7 @@ def test_a_normal_z2m_device_is_unaffected(plugin_mod, plugin):
 
 
 def test_never_means_silence_never_alerts(plugin_mod, plugin):
-    dev = FakeDevice(1, "Cupboard", Z2M,
+    dev = FakeDevice(1, "Cupboard", Z2M, battery=100,
                      states={"availability": "online"}, hours_since_comm=5000)
     plugin.quiet_by_id = {1: None}
     assert plugin._check_z2m(dev) == (False, "")
@@ -138,7 +143,7 @@ def test_never_means_silence_never_alerts(plugin_mod, plugin):
 def test_never_does_NOT_suppress_a_reported_fault(plugin_mod, plugin):
     """availability=offline is z2m actively reporting a fault, not us inferring
     one from silence. Quiet exempts silence only."""
-    dev = FakeDevice(1, "Cupboard", Z2M,
+    dev = FakeDevice(1, "Cupboard", Z2M, battery=100,
                      states={"availability": "offline"}, hours_since_comm=5000)
     plugin.quiet_by_id = {1: None}
     offline, reason = plugin._check_z2m(dev)

@@ -130,8 +130,9 @@ class TestItReachesThePhone:
         plugin_mod.indigo.devices[1] = zone(1, "En Suite Radiator",
                                             error="valve silent", status="silent")
         plugin_mod.indigo.devices[2] = FakeDevice(
-            2, "Dead Sensor", Z2M, states={"availability": "online"},
-            hours_since_comm=100)
+            2, "Dead Sensor", Z2M, battery=50,
+            states={"availability": "online"},
+            hours_since_comm=100)   # battery, so reported without a probe first
         plugin._run_scan()
         assert len(pushover.sent) == 1
         body = str(pushover.sent[0])

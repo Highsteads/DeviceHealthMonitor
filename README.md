@@ -1,6 +1,6 @@
 # Device Health Monitor
 
-**Version:** 2.9.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
+**Version:** 2.10.0 | **Author:** CliveS & Claude | **Platform:** Indigo 2022.1 or later
 
 An Indigo home automation plugin that (1) continuously monitors all physical devices for offline or stale status and sends consolidated Pushover alerts, and (2) auto-discovers comms plugins and restarts any that crash or wedge — a plugin watchdog (v2.0).
 
@@ -8,7 +8,7 @@ An Indigo home automation plugin that (1) continuously monitors all physical dev
 
 | Protocol | Source Plugin | Health Check |
 |---|---|---|
-| Zigbee (via Z2M) | Zigbee2MQTTBridge | the device's own `lastSeen`, plus z2m's `availability` flag once it has also been silent a while |
+| Zigbee (via Z2M) | Zigbee2MQTTBridge | the device's own `lastSeen` and z2m's `availability` flag — and for a mains device, whether it answers a direct read |
 | Shelly Gen2/3/4 | ShellyDirect | `deviceOnline` state (True/False) |
 | Shelly Gen1 | ShellyGen1 | `deviceOnline` state (True/False) |
 | Z-Wave | Indigo native | Indigo's `errorState` for mains, `lastSuccessfulComm` threshold for battery |
@@ -97,7 +97,8 @@ Open Plugin > Device Health Monitor > Configure:
 - **Z2M grace before trusting an offline flag** — minutes a device must also have been
   silent before zigbee2mqtt's own offline flag is sent to your phone (default 30). The flag
   flaps on any marginal radio link; a device held back repeatedly in one day is reported in
-  the log as flapping instead. Set to 0 to page on the raw flag.
+  the log as flapping instead. Set to 0 to page on the raw flag. Note that a **mains** Zigbee
+  device is also asked directly before it is reported, whatever this is set to — see below.
 - **Enable plugin watchdog** — turn the whole watchdog layer on or off (default on)
 - **Dry-run** — the watchdog logs and Pushovers what it *would* restart, without acting
   (default on)
@@ -150,6 +151,12 @@ python3 -m pytest tests -q
 No Indigo server and no hardware needed — see `tests/README.md`.
 
 ## Recent changes
+
+**v2.10.0** - **A mains Zigbee device is now asked whether it is there before it is called offline.** Yesterday's grace period was not enough, and the morning after proved it: your bedside lamp was reported offline at 07:12 and you had it dimming to 12% a minute later. The reason is that zigbee2mqtt's ping to an idle lamp is the only traffic it ever gets, so raising the timeout to half an hour also stretched the ping to half an hour - and one lost ping still declared the lamp missing. The grace could never help, because by the time the flag exists the half hour has already passed.
+
+Asking the device settles it in seconds. Three lamps here answered a direct read within six seconds, one of them after twenty-nine minutes of silence - so its silence was nothing being asked, not the bulb being absent. A mains device must now ignore two reads ten minutes apart before anything reaches your phone. This is the same finding the plugin already acts on for idle mains Z-Wave nodes, which are pinged rather than accused.
+
+**Battery devices are deliberately left out of it.** A sleeping sensor cannot answer a read, so asking proves nothing either way - measured before relying on it: two healthy battery sensors and two genuinely dead devices all failed to answer. For those, silence remains the only signal, which is what zigbee2mqtt's own twenty-five-hour timeout is for.
 
 **v2.9.0** - **A loose Zigbee light was buzzing your phone thirteen times a day.** Zigbee2MQTT pings a mains device about every ten minutes and, with its timeout set to the same ten minutes, one lost packet was enough for it to declare the device offline. This plugin believed the flag on sight and sent a message. Over the week to 18 September that was 41 offline reports across four devices - and three of those four had not actually gone quiet for more than twenty minutes once in the whole week. A device must now have been silent for half an hour as well before the flag reaches you, and half an hour was chosen because it separates the two sets cleanly: the false reports were all twenty minutes and under, the real ones thirty-nine minutes and over.
 
