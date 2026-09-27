@@ -7,6 +7,14 @@ nav_order: 10
 
 The newest version is at the top.
 
+## 2.11.0 — 27 September 2026
+
+- **A Shelly Gen 1 device that stops answering is reported.** The plugin looked for a sign of life that Shelly Gen 1 devices do not have, took its absence as good news, and so never reported one. It now also goes by Indigo's error mark, which is how Shelly Gen 1 shows a Shelly that has gone. Shelly Gen 1 is back on the list of plugins it watches.
+- **Auto-discovered default stale threshold works.** It was copied into the watchdog's rules file the first time the plugin ran, and the copy was used from then on, so changing the setting did nothing.
+- **Better built-in watchdog limits in a later version now reach you.** A new rules file held a copy of the built-in limits as they were on the day it was written. It now starts empty and holds only your own changes. An older file is tidied once, keeping every change you made, with a copy of it saved beside it.
+- **Dry-run no longer sends a message at every check** while a plugin looks failed. It keeps to the same cooldown and daily limit as a real restart.
+- **Show Plugin Info lists all seven plugins** whose devices it watches. ESPHome Bridge and RAMSES ESP were missing.
+
 ## 2.10.2 — 19 September 2026
 
 A Zigbee device is treated as battery-powered if Zigbee2MQTT says it runs on a battery, as well as if it has ever reported a battery level. A Shelly button here had joined the network without ever reporting a battery level, so it was being asked directly — which a sleeping device cannot answer — and then reported as having ignored the question. It is still reported, because it really has gone, but for the right reason.

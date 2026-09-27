@@ -32,7 +32,7 @@ The entries go in `quiet_devices.json`, which the plugin writes the first time i
 - **hours** is how long the device may be silent before it is reported. It may be longer or shorter than the plugin's normal limit for that kind of device. `"never"` means it is never reported for being silent.
 - **note** is for your own use. The plugin ignores it.
 
-A quiet device entry changes the silence limit for Zigbee devices, battery Z-Wave devices and Ecowitt sensors. It never hides a fault the device's own plugin reports — Zigbee2MQTT marking it offline, Indigo marking a Z-Wave device in error, Shelly Direct showing it offline, ESPHome Bridge showing it disconnected, or RAMSES ESP marking a room in error. Those are the device's own plugin saying something is wrong, not the plugin guessing from silence. It also means a sensor with a flat battery still turns up in the end.
+A quiet device entry changes the silence limit for Zigbee devices, battery Z-Wave devices and Ecowitt sensors. It never hides a fault the device's own plugin reports — Zigbee2MQTT marking it offline, Indigo marking a Z-Wave device in error, Shelly Direct showing it offline, Shelly Gen 1 marking it in error, ESPHome Bridge showing it disconnected, or RAMSES ESP marking a room in error. Those are the device's own plugin saying something is wrong, not the plugin guessing from silence. It also means a sensor with a flat battery still turns up in the end.
 
 ## Devices that are switched off on purpose
 

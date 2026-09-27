@@ -73,9 +73,11 @@ def test_the_hand_curated_exclude_and_include_survive_verbatim(plugin_mod):
 
 
 def test_migration_stamps_the_schema(plugin_mod):
+    """The v1 step stamps 2; the schema-3 step follows it when the file is loaded
+    (test_loading_a_v1_file_migrates_it_and_backs_it_up checks the whole chain)."""
     migrated, _, _ = plugin_mod.migrate_watchdog_config(
         V1_FILE, plugin_mod.WATCHDOG_V1_BASELINE)
-    assert migrated["schema"] == plugin_mod.WATCHDOG_SCHEMA
+    assert migrated["schema"] == 2
 
 
 def test_migration_does_not_mutate_the_input(plugin_mod):

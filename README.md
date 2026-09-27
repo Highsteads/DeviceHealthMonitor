@@ -2,7 +2,7 @@
 
 **Tells your phone when a device in Indigo stops answering, and restarts a plugin that has stopped working.**
 
-**Version:** 2.10.2 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
+**Version:** 2.11.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
 
 **[Read the full guide](https://highsteads.github.io/DeviceHealthMonitor/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -24,6 +24,7 @@ This plugin keeps an eye on the devices in [Indigo](https://www.indigodomo.com) 
 |---|---|
 | Zigbee lights, plugs and sensors | Zigbee2MQTT Bridge |
 | Shelly Plus, Pro, Gen 3 and Gen 4 | Shelly Direct |
+| Shelly Gen 1 relays and plugs | Shelly Gen 1 |
 | Z-Wave devices | Indigo's own Z-Wave |
 | Ecowitt weather sensors | Ecowitt Weather Station |
 | ESPHome devices | ESPHome Bridge |
@@ -48,11 +49,11 @@ The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through
 
 ## What's new
 
+**v2.11.0** — A Shelly Gen 1 device that stops answering is reported, the auto-discovered stale threshold setting works after the first run, and a dry run no longer sends a message at every check.
+
 **v2.10.2** — A Zigbee device is treated as battery-powered if Zigbee2MQTT says it runs on a battery, so a sleeping device is no longer asked a question it cannot answer.
 
 **v2.10.1** — While the plugin waits for a Zigbee device to answer, it no longer announces the device as recovered.
-
-**v2.10.0** — A mains Zigbee device must ignore a direct request on two checks in a row before it is reported offline.
 
 Every version is listed in the [version history](https://highsteads.github.io/DeviceHealthMonitor/changelog.html).
 

@@ -40,16 +40,14 @@ Check **Mains device quiet time** in the settings is not 0. With it at 0, the pl
 
 The message starts **[DRY RUN]**. The watchdog is in its trial mode and has not restarted anything.
 
+The watchdog sends these no more often than it would restart the plugin for real, so you see one when a real restart would happen, not at every check.
+
 - If the plugin really had stopped working, the watchdog was right, and you can untick **Dry-run** in the settings so it restarts plugins for real.
 - If the plugin was fine and simply quiet, give it a longer time limit, or `null` for never, in `watchdog_plugins.json`, or add it to that file's **exclude** list. The [plugin watchdog](watchdog.md#changing-the-rules) page explains how.
 
 ## A plugin "needs attention"
 
 The watchdog has restarted the plugin as many times as it is allowed today, and it is still failing, so it has stopped trying. Something is wrong that a restart does not fix — have a look at that plugin's own lines in the Event Log. Once it is sorted out, choose **Reset Watchdog Restart Counters** so the watchdog can restart it again if it needs to.
-
-## Changing Auto-discovered default stale threshold has no effect
-
-Once the watchdog's rules file exists, the figure in that file is used instead. Change `stale_minutes` under **discovered_default** in `watchdog_plugins.json`.
 
 ## The log says an entry in the quiet devices file was skipped
 

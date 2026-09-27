@@ -11,7 +11,7 @@ This takes a few minutes, and you only do it once.
 
 - Indigo 2022.1 or later.
 - The **Pushover** plugin for Indigo, installed, enabled and already sending messages to your phone. Device Health Monitor sends every message through it, so without it the plugin still checks your devices and writes to the Event Log, but nothing reaches your phone.
-- Devices from one or more of the plugins it knows how to judge — Zigbee2MQTT Bridge, Shelly Direct, Indigo's own Z-Wave, Ecowitt Weather Station, ESPHome Bridge or RAMSES ESP. The [What it watches](what-it-watches.md) page lists them. The plugin watchdog works with almost any plugin that runs devices.
+- Devices from one or more of the plugins it knows how to judge — Zigbee2MQTT Bridge, Shelly Direct, Shelly Gen 1, Indigo's own Z-Wave, Ecowitt Weather Station, ESPHome Bridge or RAMSES ESP. The [What it watches](what-it-watches.md) page lists them. The plugin watchdog works with almost any plugin that runs devices.
 
 It needs no account, password or key of its own.
 

@@ -13,6 +13,7 @@ A disabled device is never checked.
 |---|---|---|
 | **Zigbee** lights, plugs and sensors | Zigbee2MQTT Bridge | How long since the device last spoke, and whether Zigbee2MQTT has marked it offline. A mains device is asked directly before it is reported. |
 | **Shelly** Plus, Pro, Gen 3 and Gen 4 | Shelly Direct | Whether Shelly Direct shows it as online. |
+| **Shelly Gen 1** relays and plugs | Shelly Gen 1 | Whether Shelly Gen 1 has marked it in error because it stopped answering. |
 | **Z-Wave** | Indigo's own Z-Wave | Whether Indigo has marked it in error, and for a battery device, how long since it last spoke. A quiet mains node is asked whether it is there. |
 | **Ecowitt** weather sensors | Ecowitt Weather Station | How long since any of its readings last changed. |
 | **ESPHome** devices | ESPHome Bridge | Whether ESPHome Bridge shows it as connected. |
@@ -34,6 +35,8 @@ If the plugin holds back an offline verdict on a device four or more times in on
 ## Shelly
 
 A Shelly Plus, Pro, Gen 3 or Gen 4 device is reported at the first check after Shelly Direct shows it offline.
+
+A Shelly Gen 1 device is reported at the first check after Shelly Gen 1 marks it in error. It does that when the Shelly has missed a few polls in a row, or when a different Shelly answers at its address. Either Shelly plugin marking a device in error gets it reported.
 
 ## Z-Wave
 

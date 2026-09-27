@@ -39,7 +39,7 @@ Open these with **Plugins → Device Health Monitor → Configure**. A change ta
 |---|---|
 | **Enable plugin watchdog** | Switches the [plugin watchdog](watchdog.md) on or off. It starts ticked. |
 | **Dry-run (log/alert only, no real restarts)** | Ticked, the watchdog only tells you what it would restart. Unticked, it restarts plugins for real. It starts ticked. Leave it ticked until you have seen a few of its messages and agree with them. **Toggle Watchdog Dry-Run Mode** in the plugin menu does the same thing. |
-| **Auto-discovered default stale threshold (minutes)** | How long a plugin with no limit of its own may go without hearing from any of its devices before the watchdog treats it as wedged. It starts at 60. The figure is copied into the watchdog's rules file the first time the plugin runs, and from then on the file's figure is used — the [plugin watchdog](watchdog.md#changing-the-rules) page explains how to change it there. |
+| **Auto-discovered default stale threshold (minutes)** | How long a plugin with no limit of its own may go without hearing from any of its devices before the watchdog treats it as wedged. It starts at 60. A change takes effect at the next check. |
 
 ## Debug logging
 

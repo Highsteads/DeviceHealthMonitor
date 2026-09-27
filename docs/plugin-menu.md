@@ -31,4 +31,4 @@ These are under **Plugins → Device Health Monitor**. Each one writes its answe
 
 | Menu item | What it does |
 |---|---|
-| **Show Plugin Info** | Writes the plugin's version, details of your Mac and Indigo, and a summary of its settings, outstanding alerts, left-out, quiet and away devices, and watchdog state to the log, which is useful to include if you ask for help on the Indigo forum. |
+| **Show Plugin Info** | Writes the plugin's version, details of your Mac and Indigo, the plugins whose devices it watches, and a summary of its settings, outstanding alerts, left-out, quiet and away devices, and watchdog state to the log, which is useful to include if you ask for help on the Indigo forum. |

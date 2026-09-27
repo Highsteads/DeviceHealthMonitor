@@ -4,9 +4,16 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Sonnet 5
-# Date:        13-09-2026
-# Version:     2.10.2
+# Author:      CliveS & Claude Opus 5.5
+# Date:        27-09-2026
+# Version:     2.11.0
+#
+# v2.11.0 (27-09-2026): five faults found while writing the guide. A Shelly in
+# Indigo's errorState is reported (Shelly Gen 1 has no deviceOnline state, so a dead
+# one never was). The rules file holds only the user's edits (schema 3), so later
+# built-in limits reach every install and the Configure dialog's discovered stale
+# threshold works after the first run. Dry-run keeps to the cooldown and daily limit.
+# Show Plugin Info lists all seven watched plugins, built from MONITORED_PLUGINS.
 #
 # v2.8.1 (13-09-2026): WATCHDOG_OVERRIDES gained an entry for Z-Wave Controller
 # Backup (stale_minutes: None) — see the comment beside it. Found by the
@@ -278,11 +285,30 @@ MONITORED_PLUGINS = {
     "uk.co.clives.ramses.esp":                         "ramses",
 }
 
+# What Show Plugin Info calls each watched plugin. Keyed like MONITORED_PLUGINS so the
+# list is built from it and cannot drift: until 2.11.0 it was typed out by hand and
+# still named five kinds of device after ESPHome and RAMSES ESP had been added.
+MONITORED_LABELS = {
+    "com.clives.indigoplugin.z2mbridge":               "Z2M",
+    "com.clives.indigoplugin.shellydirect":            "ShellyDirect",
+    "com.clives.indigoplugin.shellyg1":                "ShellyGen1",
+    "com.perceptiveautomation.indigoplugin.zwave":     "Z-Wave",
+    "com.clives.indigoplugin.ecowitt":                 "Ecowitt",
+    "com.clives.indigoplugin.esphomebridge":           "ESPHome",
+    "uk.co.clives.ramses.esp":                         "RAMSES ESP",
+}
+
+
+def monitored_protocols_label():
+    """Every watched plugin, in MONITORED_PLUGINS order, for Show Plugin Info."""
+    return ", ".join(MONITORED_LABELS.get(pid, pid) for pid in MONITORED_PLUGINS)
+
+
 PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.10.2"
+PLUGIN_VERSION = "2.11.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -543,8 +569,10 @@ WATCHDOG_DENYLIST = {
 }
 
 # Policy for auto-discovered plugins with no tuned override (generous so a newly-seen
-# plugin is never nuisance-restarted before you tune it). stale_minutes is overridden
-# by the "Auto-discovered default stale threshold" preference.
+# plugin is never nuisance-restarted before you tune it). stale_minutes ALWAYS comes
+# from the "Auto-discovered default stale threshold" preference — from 2.11.0 the
+# rules file cannot override it, because until then the file's copy silently won and
+# the setting did nothing after the first run.
 DISCOVERED_DEFAULT = {"stale_minutes": 60, "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}
 
 WATCHDOG_CONFIG_FILE = os.path.expanduser(
@@ -556,7 +584,14 @@ WATCHDOG_CONFIG_FILE = os.path.expanduser(
 # file. On this install that shadowed BOTH the v2.1 EcoFlow 720->60 tightening and
 # the v2.2 entry removal — neither had ever been in effect. The schema marker plus
 # the frozen v1 baseline below let us undo that once, without discarding real edits.
-WATCHDOG_SCHEMA = 2
+#
+# Schema 3 (2.11.0): 2.3.0 fixed that for OLD files but went on writing every NEW file
+# with a full copy of the built-in limits, the never-restart list and the discovered
+# default — so a file written by 2.3.0 to 2.10.2 froze the limits of the day it was
+# written, and its discovered_default.stale_minutes outvoted the preference for good.
+# A fresh file now holds only the user's own edits, and a schema-2 file is reconciled
+# once against WATCHDOG_SHIPPED_OVERRIDES below.
+WATCHDOG_SCHEMA = 3
 
 # The v2.0 overrides that seeded every pre-schema file. An on-disk policy identical
 # to its entry here was never touched by anyone, so the current code default wins.
@@ -604,8 +639,103 @@ def migrate_watchdog_config(data, v1_baseline):
             kept.append(pid)
     migrated = dict(data)
     migrated["overrides"] = {pid: overrides[pid] for pid in kept}
-    migrated["schema"]    = WATCHDOG_SCHEMA
+    migrated["schema"]    = 2     # the v1 -> v2 step; migrate_watchdog_config_v3 follows
     return migrated, dropped, kept
+
+
+# Every built-in override a schema-2 file could have been seeded with: the values of
+# WATCHDOG_OVERRIDES as shipped from 2.3.0 to 2.10.2, read from the git history on
+# 27-09-2026. Like WATCHDOG_V1_BASELINE this is a HISTORICAL RECORD — do not update
+# it to track WATCHDOG_OVERRIDES. From 2.11.0 no file is seeded with the built-ins,
+# so nothing written later can need it.
+WATCHDOG_SHIPPED_OVERRIDES = {
+    "com.clives.indigoplugin.z2mbridge":                [{"stale_minutes": 5,    "cooldown_minutes": 15, "max_per_day": 6, "enabled": True}],
+    "com.clives.indigoplugin.tasmotabridge":            [{"stale_minutes": 8,    "cooldown_minutes": 15, "max_per_day": 6, "enabled": True}],
+    "com.clives.indigoplugin.esphomebridge":            [{"stale_minutes": 10,   "cooldown_minutes": 20, "max_per_day": 4, "enabled": True}],
+    "com.clives.indigoplugin.sigenergy-energy-manager": [{"stale_minutes": 10,   "cooldown_minutes": 20, "max_per_day": 4, "enabled": True}],
+    "com.clives.indigoplugin.ecoflowcloud":             [{"stale_minutes": 60,   "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}],
+    "com.clives.indigoplugin.ecowitt":                  [{"stale_minutes": 20,   "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}],
+    "uk.co.clives.ramses.esp":                          [{"stale_minutes": 180,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}],
+    "com.clives.indigoplugin.dahuaevents":              [{"stale_minutes": 240,  "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}],
+    "com.clives.indigoplugin.shellydirect":             [{"stale_minutes": 15,   "cooldown_minutes": 30, "max_per_day": 3, "enabled": True}],
+    "com.clives.indigoplugin.shellyg1":                 [{"stale_minutes": 30,   "cooldown_minutes": 60, "max_per_day": 2, "enabled": True}],
+    "com.clives.indigoplugin.humaxaura":                [{"stale_minutes": 1440, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True},
+                                                         {"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True}],
+    "com.clives.indigoplugin.broadlinkrf":              [{"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True}],
+    "com.clives.indigoplugin.zwave-controller-backup":  [{"stale_minutes": None, "cooldown_minutes": 60, "max_per_day": 2, "enabled": True}],
+}
+
+WATCHDOG_FILE_COMMENTS = {
+    "_comment":  "Device Health Monitor — plugin watchdog policy (auto-discovering).",
+    "_comment2": "The watchdog auto-discovers any plugin that owns comms devices. "
+                 "'overrides' holds only YOUR per-plugin limits (stale_minutes / "
+                 "cooldown_minutes / max_per_day / enabled) — a plugin not listed uses "
+                 "the plugin's current built-in limits, and a key you leave out keeps its "
+                 "built-in value. 'exclude' adds plugin ids never to restart; the built-in "
+                 "never-restart list always applies. 'include' takes a plugin off that "
+                 "built-in list. 'discovered_default' can change cooldown_minutes / "
+                 "max_per_day / enabled for discovered plugins with no limits of their own; "
+                 "their stale threshold is set in the plugin's Configure dialog.",
+    "_comment4": "'Show Watchdog Status' lists the policy actually in force for every "
+                 "watched plugin.",
+}
+
+
+def migrate_watchdog_config_v3(data, shipped, denylist, discovered_default, dialog_stale):
+    """Reconcile a schema-2 file: drop what it was seeded with, keep what was edited.
+
+    * An override equal to ANY built-in value we ever shipped for that plugin is an
+      untouched seed and is dropped, so the current built-in applies. The one cost is
+      the same as the v1 step: an edit that matches an old built-in exactly is reverted.
+    * An 'exclude' entry already on the built-in never-restart list is dropped — the
+      code applies that list anyway, and a copy would outlive a later change to it.
+    * 'discovered_default' loses any key equal to the built-in, and always loses
+      stale_minutes, which lives in the Configure dialog from now on. Where the file's
+      figure was the one really in force and the dialog was never moved off its
+      starting value, the file's figure is handed back as 'adopt_stale' so the caller
+      can carry it into the dialog and nothing the user set is lost.
+
+    Pure — plain values in, plain values out. Returns (migrated, report).
+    """
+    overrides     = dict(data.get("overrides") or {})
+    dropped, kept = [], []
+    for pid in sorted(overrides):
+        if overrides[pid] in (shipped.get(pid) or []):
+            dropped.append(pid)
+        else:
+            kept.append(pid)
+
+    exclude          = list(data.get("exclude") or [])
+    dropped_excludes = [pid for pid in exclude if pid in denylist]
+
+    dd         = dict(data.get("discovered_default") or {})
+    had_stale  = "stale_minutes" in dd
+    file_stale = dd.pop("stale_minutes", None)
+    dd         = {k: v for k, v in dd.items() if discovered_default.get(k, object()) != v}
+
+    adopt = None
+    try:
+        file_num = float(file_stale) if file_stale is not None else None
+    except (TypeError, ValueError):
+        file_num = None
+    if (file_num is not None and file_num > 0 and file_num != dialog_stale
+            and dialog_stale == discovered_default.get("stale_minutes")):
+        adopt = file_num
+
+    migrated = dict(data)
+    migrated["overrides"]          = {pid: overrides[pid] for pid in kept}
+    migrated["exclude"]            = [pid for pid in exclude if pid not in denylist]
+    migrated["discovered_default"] = dd
+    migrated.update(WATCHDOG_FILE_COMMENTS)
+    migrated["schema"] = WATCHDOG_SCHEMA
+    report = {
+        "dropped":          dropped,
+        "kept":             kept,
+        "dropped_excludes": dropped_excludes,
+        "file_stale":       file_stale if had_stale else None,
+        "adopt_stale":      adopt,
+    }
+    return migrated, report
 
 
 import logging
@@ -714,7 +844,8 @@ class Plugin(indigo.PluginBase):
         self.offline_tol_by_name: dict[str, float | None] = {}
         self._load_quiet_devices()
 
-        # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool}
+        # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool,
+        #              plus the dry-run twins last_dry_run / dry_runs_today / dry_cap_alerted}
         self.restart_state: dict = {}
         self._restore_watchdog_state()
         # Resolved config (seeded from code, overlaid by the editable JSON file)
@@ -1369,6 +1500,21 @@ class Plugin(indigo.PluginBase):
         return False, ""
 
     def _check_shelly(self, dev):
+        """A Shelly is judged on Indigo's errorState first, then on deviceOnline.
+
+        Shelly Gen 1 has NO deviceOnline state. It marks a Shelly that stops
+        answering with errorState "unreachable" (and "wrong device" when another
+        Shelly answers at its address), so until 2.11.0 the missing state read as
+        online and a dead Gen 1 device could never be reported. Shelly Direct
+        never sets errorState (checked 27-09-2026), so for it nothing changes.
+
+        Deliberately NOT applied to every protocol: z2mbridge sets errorState
+        "offline" from the same availability flag _check_z2m already judges with
+        a grace and a direct read, and reading the errorState there would skip
+        both and bring back the false alarms they exist to stop.
+        """
+        if dev.errorState:
+            return True, f"errorState={dev.errorState!r}"
         # deviceOnline may be bool or string depending on device type
         raw    = dev.states.get("deviceOnline", True)
         online = raw if isinstance(raw, bool) else str(raw).lower() not in ("false", "0", "no")
@@ -1581,13 +1727,13 @@ class Plugin(indigo.PluginBase):
         overrides = {pid: dict(pol) for pid, pol in WATCHDOG_OVERRIDES.items()}
         exclude   = set(WATCHDOG_DENYLIST)
         default   = dict(DISCOVERED_DEFAULT)
-        default["stale_minutes"] = self.watchdog_discovered_stale
         try:
             if os.path.exists(WATCHDOG_CONFIG_FILE):
                 with open(WATCHDOG_CONFIG_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                if _as_int(data.get("schema", 0), 0) < WATCHDOG_SCHEMA:
-                    data = self._migrate_watchdog_file(data)
+                schema = _as_int(data.get("schema", 0), 0)
+                if schema < WATCHDOG_SCHEMA:
+                    data = self._migrate_watchdog_file(data, schema)
                 for pid, pol in (data.get("overrides") or {}).items():
                     if isinstance(pol, dict):
                         overrides.setdefault(pid, {})
@@ -1598,10 +1744,15 @@ class Plugin(indigo.PluginBase):
                     exclude.discard(pid)
                 if isinstance(data.get("discovered_default"), dict):
                     default.update(data["discovered_default"])
+                    self._note_ignored_file_stale(data["discovered_default"])
             else:
-                self._write_watchdog_config(overrides, sorted(exclude), default)
+                self._write_watchdog_config()
         except Exception as e:
             log(f"Watchdog: failed to load config ({e}) — using built-in defaults", level="WARNING")
+        # The Configure dialog is the ONE home of the discovered stale threshold. Set
+        # after the file on purpose: until 2.11.0 the file's copy was applied last and
+        # the setting did nothing once the file existed.
+        default["stale_minutes"] = self.watchdog_discovered_stale
         # Hard excludes — never restartable, cannot be re-included.
         exclude.add(CLAUDEBRIDGE_ID)
         exclude.add(self.pluginId)
@@ -1609,22 +1760,44 @@ class Plugin(indigo.PluginBase):
         self.watchdog_exclude            = exclude
         self.watchdog_discovered_default = default
 
-    def _migrate_watchdog_file(self, data):
-        """One-shot reconciliation of a pre-schema config file: back it up, rewrite it.
+    def _migrate_watchdog_file(self, data, schema):
+        """One-shot reconciliation of an older config file: back it up, rewrite it.
 
-        Runs only while the file carries no (or an older) schema marker, so it never
-        churns the file on the 10-minute reload — which would otherwise fight anyone
-        editing it in a text editor.
+        Runs only while the file carries an older schema marker, so it never churns
+        the file on the 10-minute reload — which would otherwise fight anyone editing
+        it in a text editor. A v1 file takes both steps in turn.
         """
-        migrated, dropped, kept = migrate_watchdog_config(data, WATCHDOG_V1_BASELINE)
-        migrated.setdefault(
-            "_comment4",
-            "'overrides' now holds only YOUR edits — anything absent uses the plugin's "
-            "current built-in default. 'Show Watchdog Status' lists the policy actually "
-            "in force for every watched plugin.",
-        )
+        dropped, kept = [], []
+        if schema < 2:
+            data, dropped, kept = migrate_watchdog_config(data, WATCHDOG_V1_BASELINE)
+        migrated, report = migrate_watchdog_config_v3(
+            data, WATCHDOG_SHIPPED_OVERRIDES, WATCHDOG_DENYLIST,
+            DISCOVERED_DEFAULT, self.watchdog_discovered_stale)
+        dropped = sorted(set(dropped) | set(report["dropped"]))
+        kept    = report["kept"]
+
+        adopt = report["adopt_stale"]
+        if adopt is not None:
+            # The file's figure was the one in force and the dialog was never moved,
+            # so carry it into the dialog rather than lose it.
+            self.watchdog_discovered_stale = adopt
+            try:
+                self.pluginPrefs["watchdogDefaultStaleMin"] = f"{adopt:g}"
+                indigo.server.savePluginPrefs()
+            except Exception as e:
+                log(f"Watchdog: could not save the stale threshold to the plugin's "
+                    f"settings ({e}) — it applies for this session", level="WARNING")
+            log(f"Watchdog: the auto-discovered stale threshold of {adopt:g} minutes from "
+                f"{WATCHDOG_CONFIG_FILE} is now in the plugin's Configure dialog, which is "
+                f"where it is set from now on")
+        elif report["file_stale"] is not None and report["file_stale"] != self.watchdog_discovered_stale:
+            log(f"Watchdog: {WATCHDOG_CONFIG_FILE} held an auto-discovered stale threshold of "
+                f"{report['file_stale']} minutes, and the plugin's Configure dialog says "
+                f"{self.watchdog_discovered_stale:g}. The dialog's figure applies from now on.",
+                level="WARNING")
+
         try:
-            backup = f"{WATCHDOG_CONFIG_FILE}.bak-v1"
+            backup = f"{WATCHDOG_CONFIG_FILE}.bak-v{max(schema, 1)}"
             if not os.path.exists(backup):
                 shutil.copy2(WATCHDOG_CONFIG_FILE, backup)
             with open(WATCHDOG_CONFIG_FILE, "w", encoding="utf-8") as f:
@@ -1640,25 +1813,42 @@ class Plugin(indigo.PluginBase):
                 f"migrated policy applies for this session only", level="WARNING")
         return migrated
 
-    def _write_watchdog_config(self, overrides, exclude_list, default):
+    def _note_ignored_file_stale(self, file_default):
+        """Say once, not every ten minutes, that a stale threshold typed into the
+        file's discovered_default is not used — the Configure dialog sets it."""
+        if "stale_minutes" not in file_default:
+            self._warned_file_stale = None
+            return
+        value = file_default.get("stale_minutes")
+        if getattr(self, "_warned_file_stale", None) == value:
+            return
+        self._warned_file_stale = value
+        log(f"Watchdog: stale_minutes under discovered_default in {WATCHDOG_CONFIG_FILE} is "
+            f"not used. Set the auto-discovered stale threshold in the plugin's Configure "
+            f"dialog (now {self.watchdog_discovered_stale:g} minutes).", level="WARNING")
+
+    def _write_watchdog_config(self):
+        """Write a fresh rules file holding NO copies of the built-ins.
+
+        Until 2.11.0 a new file was seeded with every built-in limit, the whole
+        never-restart list and the discovered default, and because the file
+        overlays the code those copies outvoted every later change to the built-ins
+        and the Configure dialog's stale threshold. Empty sections mean 'use the
+        plugin's current built-ins'; the user adds only what they want to change.
+        """
         try:
             os.makedirs(os.path.dirname(WATCHDOG_CONFIG_FILE), exist_ok=True)
-            doc = {
-                "_comment":  "Device Health Monitor — plugin watchdog policy (auto-discovering).",
-                "_comment2": "The watchdog auto-discovers any plugin that owns comms devices. "
-                             "'overrides' tunes per-plugin thresholds (stale_minutes / cooldown_minutes / "
-                             "max_per_day / enabled). 'exclude' lists plugin ids never to restart. "
-                             "'include' un-excludes a code-denylisted plugin. 'discovered_default' is the "
-                             "policy for discovered plugins with no override.",
-                "_comment3": f"{CLAUDEBRIDGE_ID} and {self.pluginId} are ALWAYS excluded in code.",
+            doc = dict(WATCHDOG_FILE_COMMENTS)
+            doc["_comment3"] = f"{CLAUDEBRIDGE_ID} and {self.pluginId} are ALWAYS excluded in code."
+            doc.update({
                 # Stamp the schema on a fresh file so it is never put through the
-                # one-shot v1 reconciliation on its next load.
+                # one-shot reconciliation on its next load.
                 "schema":             WATCHDOG_SCHEMA,
-                "overrides":          overrides,
-                "exclude":            exclude_list,
+                "overrides":          {},
+                "exclude":            [],
                 "include":            [],
-                "discovered_default": default,
-            }
+                "discovered_default": {},
+            })
             with open(WATCHDOG_CONFIG_FILE, "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=4)
             log(f"Watchdog: wrote default config to {WATCHDOG_CONFIG_FILE}")
@@ -1750,30 +1940,51 @@ class Plugin(indigo.PluginBase):
     def _maybe_restart_plugin(self, pid, policy, verdict, reason, now):
         label        = self._plugin_label(pid)
         rec          = self._restart_record(pid, now)
-        cooldown_min = float(policy.get("cooldown_minutes", 30))
-        max_per_day  = int(policy.get("max_per_day", 3))
-        last         = self._last_restart_dt(pid)
+        cooldown_min = _as_float(policy.get("cooldown_minutes", 30), 30)
+        max_per_day  = _as_int(policy.get("max_per_day", 3), 3)
+        dry          = self.watchdog_dry_run
+        # Dry-run keeps its OWN count of the restarts it would have made, under the
+        # same cooldown and daily limit. Until 2.11.0 those counted only real
+        # restarts, so a dry run pushed at every check while a plugin looked failed.
+        # Separate keys, so switching to LIVE starts from the real history, not the
+        # pretend one.
+        last_key, count_key, cap_key = (("last_dry_run", "dry_runs_today", "dry_cap_alerted")
+                                        if dry else
+                                        ("last_restart", "restarts_today", "cap_alerted"))
+        last  = self._parse_iso(rec.get(last_key))
+        count = _as_int(rec.get(count_key, 0), 0)
 
         if last and (now - last).total_seconds() < cooldown_min * 60:
             if self.debug:
                 mins = (now - last).total_seconds() / 60.0
-                log(f"Watchdog: {label} {verdict} but restarted {mins:.0f}m ago "
-                    f"(cooldown {cooldown_min:.0f}m) — skipping")
+                log(f"Watchdog: {label} {verdict} but {'dry-run flagged' if dry else 'restarted'} "
+                    f"{mins:.0f}m ago (cooldown {cooldown_min:.0f}m) — skipping")
             return
 
-        if rec["restarts_today"] >= max_per_day:
-            if not rec.get("cap_alerted"):
-                rec["cap_alerted"] = True
-                msg = (f"{label} still {verdict} after {rec['restarts_today']} restart(s) today "
-                       f"(daily cap {max_per_day}). Needs manual attention. {reason}")
-                log(msg, level="ERROR")
-                self._send_pushover(f"Watchdog: {label} needs attention", msg, priority="1")
+        if count >= max_per_day:
+            if not rec.get(cap_key):
+                rec[cap_key] = True
+                if dry:
+                    msg = (f"{label} still {verdict} after {count} dry-run restart(s) today "
+                           f"(daily cap {max_per_day}). Live, it would now stop and ask for "
+                           f"attention. {reason}")
+                    log(f"[DRY RUN] {msg}", level="WARNING")
+                    self._send_pushover(f"[DRY RUN] Watchdog: {label} would need attention",
+                                        msg, priority="0")
+                else:
+                    msg = (f"{label} still {verdict} after {count} restart(s) today "
+                           f"(daily cap {max_per_day}). Needs manual attention. {reason}")
+                    log(msg, level="ERROR")
+                    self._send_pushover(f"Watchdog: {label} needs attention", msg, priority="1")
             return
 
-        if self.watchdog_dry_run:
+        if dry:
+            rec[last_key]  = now.isoformat()
+            rec[count_key] = count + 1
             log(f"[DRY RUN] Watchdog WOULD restart {label} — {verdict}: {reason}", level="WARNING")
             self._send_pushover(f"[DRY RUN] Watchdog: {label}",
-                                f"Would restart ({verdict}): {reason}", priority="0")
+                                f"Would restart ({verdict}): {reason}\n"
+                                f"Dry-run restart #{rec[count_key]} today.", priority="0")
             return
 
         log(f"Watchdog restarting {label} — {verdict}: {reason}", level="WARNING")
@@ -1808,16 +2019,24 @@ class Plugin(indigo.PluginBase):
         today = now.strftime("%Y-%m-%d")
         for rec in self.restart_state.values():
             if rec.get("day") != today:
-                rec["day"]            = today
-                rec["restarts_today"] = 0
-                rec["cap_alerted"]    = False
+                rec["day"]             = today
+                rec["restarts_today"]  = 0
+                rec["cap_alerted"]     = False
+                rec["dry_runs_today"]  = 0
+                rec["dry_cap_alerted"] = False
 
     def _last_restart_dt(self, pid):
         rec = self.restart_state.get(pid)
-        if not rec or not rec.get("last_restart"):
+        if not rec:
+            return None
+        return self._parse_iso(rec.get("last_restart"))
+
+    @staticmethod
+    def _parse_iso(value):
+        if not value:
             return None
         try:
-            return datetime.fromisoformat(rec["last_restart"])
+            return datetime.fromisoformat(value)
         except Exception:
             return None
 
@@ -2071,7 +2290,7 @@ class Plugin(indigo.PluginBase):
                 ("Away tolerances:",
                  f"{len(self.offline_tol_by_id) + len(self.offline_tol_by_name)} device(s)"),
                 ("Quiet file:",    QUIET_DEVICES_FILE),
-                ("Protocols:",     "Z2M, ShellyDirect, ShellyGen1, Z-Wave, Ecowitt"),
+                ("Protocols:",     monitored_protocols_label()),
                 ("Watchdog:",      f"{'ON' if self.watchdog_enabled else 'OFF'} "
                                    f"({'dry-run' if self.watchdog_dry_run else 'LIVE'}, auto-discover)"),
                 ("Watchdog tuned:", f"{len(self.watchdog_overrides)} plugin(s)"),
