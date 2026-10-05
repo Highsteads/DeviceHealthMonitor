@@ -7,6 +7,11 @@ nav_order: 10
 
 The newest version is at the top.
 
+## 2.12.0 — 5 October 2026
+
+- **An Ecowitt gateway or sensor that stops sending is reported.** The plugin judged an Ecowitt device on when it last changed. Ecowitt updates its gateway every minute, and marks a silent sensor offline, even when no reading arrives, so the device always looked recently changed and a dead gateway was never reported. The plugin now goes by the time since the device's last reading.
+- The setting is now called **Ecowitt no-reading threshold (hours)**. It keeps its value.
+
 ## 2.11.0 — 27 September 2026
 
 - **A Shelly Gen 1 device that stops answering is reported.** The plugin looked for a sign of life that Shelly Gen 1 devices do not have, took its absence as good news, and so never reported one. It now also goes by Indigo's error mark, which is how Shelly Gen 1 shows a Shelly that has gone. Shelly Gen 1 is back on the list of plugins it watches.

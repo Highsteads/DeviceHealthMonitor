@@ -27,7 +27,7 @@ Indigo asks whether to enable the plugin. Say yes.
 
 Open **Plugins → Device Health Monitor → Configure**.
 
-The settings it starts with suit most houses: a check every 10 minutes, a day of silence allowed for a battery Z-Wave device, a day without any change for an Ecowitt sensor, and 12 hours of silence for a Zigbee device. The plugin watchdog is switched on, but in its trial mode, **Dry-run**, so it will only tell you what it would restart.
+The settings it starts with suit most houses: a check every 10 minutes, a day of silence allowed for a battery Z-Wave device, a day without a reading from an Ecowitt sensor, and 12 hours of silence for a Zigbee device. The plugin watchdog is switched on, but in its trial mode, **Dry-run**, so it will only tell you what it would restart.
 
 Click **Save**. Every setting is explained on the [Settings](settings.md) page.
 

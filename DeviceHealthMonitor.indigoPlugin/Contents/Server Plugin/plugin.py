@@ -5,8 +5,16 @@
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
-# Date:        27-09-2026
-# Version:     2.11.0
+# Date:        05-10-2026 22:55 BST
+# Version:     2.12.0
+#
+# v2.12.0 (05-10-2026): A DEAD ECOWITT GATEWAY IS REPORTED. _check_ecowitt judged
+# lastChanged, and Ecowitt rewrites lastUpdateAgeSec on its gateway every 60 s and
+# deviceOnline=False on a stale sensor, so lastChanged never aged and a dead gateway
+# was never reported (audit finding MON-03). Now judged on the time since the last
+# reading (lastUpdate, and lastUpdateAgeSec on the gateway, the older of the two)
+# against the Ecowitt threshold; Ecowitt's own offline mark counts when there is no
+# reading on record; lastChanged only when a device has none of those states.
 #
 # v2.11.0 (27-09-2026): five faults found while writing the guide. A Shelly in
 # Indigo's errorState is reported (Shelly Gen 1 has no deviceOnline state, so a dead
@@ -308,7 +316,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.11.0"
+PLUGIN_VERSION = "2.12.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -481,6 +489,63 @@ def resolve_quiet_hours(dev_id, dev_name, default_hours, by_id, by_name):
     if key in by_name:
         return by_name[key], True
     return default_hours, False
+
+
+# ---------------------------------------------------------------------------
+# Ecowitt feed — the states Ecowitt Weather Station keeps, read as it writes them.
+# ---------------------------------------------------------------------------
+# lastUpdate is written ONLY when a reading arrives ("%Y-%m-%d %H:%M:%S", local
+# time; the gateway's own clock for the Main Gateway). lastUpdateAgeSec (gateway
+# only) is rewritten every 60 s, counted from the plugin's start when nothing has
+# arrived since. deviceOnline goes False after Ecowitt's stale timeout (5 min by
+# default); connectionStatus (gateway only) reads Live / Stale / Offline.
+ECOWITT_STAMP_FORMAT = "%Y-%m-%d %H:%M:%S"
+
+
+def ecowitt_feed_age_hours(states, now):
+    """Hours since this Ecowitt device last delivered a reading, or None.
+
+    Takes the OLDER of the two clocks. After an Ecowitt restart lastUpdateAgeSec
+    starts again from zero while lastUpdate still holds the real last reading, so
+    the age counter alone would forgive a dead gateway for one stale timeout per
+    restart. A stamp in the future (a gateway clock running ahead) counts as no
+    age at all rather than a negative one.
+    """
+    ages = []
+    raw_age = states.get("lastUpdateAgeSec")
+    if raw_age not in (None, ""):
+        try:
+            ages.append(max(float(raw_age), 0.0) / 3600.0)
+        except (TypeError, ValueError):
+            pass
+    raw_stamp = states.get("lastUpdate")
+    if raw_stamp:
+        try:
+            seen = datetime.strptime(str(raw_stamp).strip(), ECOWITT_STAMP_FORMAT)
+            ages.append(max((now - seen).total_seconds(), 0.0) / 3600.0)
+        except (TypeError, ValueError):
+            pass
+    return max(ages) if ages else None
+
+
+def ecowitt_verdict(states):
+    """Ecowitt's own view: True = it says offline, False = online, None = silent.
+
+    deviceOnline can arrive as a bool or as the string "True"/"False", so it goes
+    through as_bool rather than bool(). An ABSENT state is None, never online.
+    """
+    spoke   = False
+    offline = False
+    if states.get("deviceOnline") not in (None, ""):
+        spoke = True
+        if not as_bool(states.get("deviceOnline")):
+            offline = True
+    status = str(states.get("connectionStatus") or "").strip().lower()
+    if status:
+        spoke = True
+        if status == "offline":
+            offline = True
+    return offline if spoke else None
 
 # ---------------------------------------------------------------------------
 # Plugin Watchdog — auto-discover and restart crashed or wedged comms plugins.
@@ -1551,10 +1616,47 @@ class Plugin(indigo.PluginBase):
         # Mains device with no error — healthy (stale comm is normal for un-polled nodes).
         return False, ""
 
-    def _check_ecowitt(self, dev):
-        # NB this judges lastChanged, not lastSuccessfulComm — so it trips on an
-        # UNCHANGED VALUE rather than on silence. A quiet override here therefore
-        # relaxes a slightly different failure mode than on the other two paths.
+    def _check_ecowitt(self, dev, now=None):
+        """An Ecowitt device is judged on its FEED, then on Ecowitt's verdict.
+
+        Until 2.12.0 this read dev.lastChanged alone, and that could never see a
+        dead gateway: Ecowitt rewrites lastUpdateAgeSec on the gateway every 60 s
+        and deviceOnline=False on a stale sensor, and each write refreshes
+        lastChanged. Ecowitt never sets errorState, so that is no help either.
+
+        Order:
+        1. The time since the last reading (lastUpdate / lastUpdateAgeSec)
+           against the threshold. This also catches Ecowitt itself hanging,
+           when deviceOnline is never rewritten and stays True.
+        2. Ecowitt says offline but there has never been a reading: offline.
+        3. Neither feed state nor verdict (a device carrying none of them, as
+           before Ecowitt 2.0): the old lastChanged rule.
+
+        Ecowitt calls a device offline after 5 minutes. This plugin has no
+        debounce, so a verdict inside the threshold is not reported on its own:
+        it would page on every gateway reboot.
+        """
+        now    = now or datetime.now()
+        states = dev.states
+        thresh, quiet = self._threshold_for(dev, self.ecowitt_hours)
+        note    = " — quiet device" if quiet else ""
+        verdict = ecowitt_verdict(states)
+        age     = ecowitt_feed_age_hours(states, now)
+
+        if age is not None:
+            if thresh is None:
+                return False, ""
+            said = ", and Ecowitt marks it offline" if verdict else ""
+            return age > thresh, \
+                f"no reading for {age:.1f}h (threshold {thresh:g}h{note}){said}"
+        if verdict is True:
+            if thresh is None:
+                return False, ""
+            return True, "Ecowitt marks it offline and it has no reading on record"
+
+        # No feed states at all. NB this judges lastChanged, not
+        # lastSuccessfulComm — so it trips on an UNCHANGED VALUE rather than on
+        # silence.
         last = dev.lastChanged
         if last is None:
             return True, "lastChanged=None"

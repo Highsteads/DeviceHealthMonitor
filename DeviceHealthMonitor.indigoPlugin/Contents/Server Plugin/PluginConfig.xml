@@ -34,10 +34,10 @@
     </Field>
 
     <Field id="ecowitt_hours" type="textfield" defaultValue="24">
-        <Label>Ecowitt state-change threshold (hours)</Label>
+        <Label>Ecowitt no-reading threshold (hours)</Label>
     </Field>
     <Field id="label_ecowitt_hours_info" type="label">
-        <Label>Alert if an Ecowitt device has had no state change for this many hours (uses lastChanged as a proxy).</Label>
+        <Label>Alert if an Ecowitt device has sent no reading for this many hours.</Label>
     </Field>
 
     <Field id="sep_z2m" type="separator"/>

@@ -15,7 +15,7 @@ A disabled device is never checked.
 | **Shelly** Plus, Pro, Gen 3 and Gen 4 | Shelly Direct | Whether Shelly Direct shows it as online. |
 | **Shelly Gen 1** relays and plugs | Shelly Gen 1 | Whether Shelly Gen 1 has marked it in error because it stopped answering. |
 | **Z-Wave** | Indigo's own Z-Wave | Whether Indigo has marked it in error, and for a battery device, how long since it last spoke. A quiet mains node is asked whether it is there. |
-| **Ecowitt** weather sensors | Ecowitt Weather Station | How long since any of its readings last changed. |
+| **Ecowitt** weather sensors | Ecowitt Weather Station | How long since it last sent a reading. |
 | **ESPHome** devices | ESPHome Bridge | Whether ESPHome Bridge shows it as connected. |
 | **Evohome radiator valves** | RAMSES ESP | Whether RAMSES ESP has marked the room in error because its valve has gone silent. |
 
@@ -48,7 +48,9 @@ Some Z-Wave nodes refuse a status request altogether. When a node has ignored th
 
 ## Ecowitt
 
-An Ecowitt sensor is reported when none of its readings have changed for longer than **Ecowitt state-change threshold**, 24 hours to start with. A sensor whose readings stop changing has usually stopped sending.
+An Ecowitt gateway or sensor is reported when it has sent no reading for longer than **Ecowitt no-reading threshold**, 24 hours to start with. The plugin reads the time of the last reading that Ecowitt Weather Station records for each device.
+
+Ecowitt Weather Station marks a device offline after a few minutes without data. That alone does not raise an alert, because a gateway that restarts would otherwise send a message every time. It counts only for a device that has never sent a reading at all, which is reported at the next check.
 
 ## ESPHome
 

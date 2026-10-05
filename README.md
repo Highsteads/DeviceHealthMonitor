@@ -2,7 +2,7 @@
 
 **Tells your phone when a device in Indigo stops answering, and restarts a plugin that has stopped working.**
 
-**Version:** 2.11.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
+**Version:** 2.12.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
 
 **[Read the full guide](https://highsteads.github.io/DeviceHealthMonitor/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -48,6 +48,8 @@ The plugin watchdog works with almost any plugin that runs devices.
 The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v2.12.0** — An Ecowitt gateway or sensor that stops sending is reported. The plugin judged Ecowitt devices on when a device last changed, and Ecowitt updates its gateway every minute even when no reading arrives, so a dead gateway was never reported.
 
 **v2.11.0** — A Shelly Gen 1 device that stops answering is reported, the auto-discovered stale threshold setting works after the first run, and a dry run no longer sends a message at every check.
 

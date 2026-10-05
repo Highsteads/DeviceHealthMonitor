@@ -24,7 +24,7 @@ Open these with **Plugins → Device Health Monitor → Configure**. A change ta
 
 | Setting | What it does |
 |---|---|
-| **Ecowitt state-change threshold (hours)** | How long an Ecowitt sensor may go without any of its readings changing before it is reported. It starts at 24. |
+| **Ecowitt no-reading threshold (hours)** | How long an Ecowitt gateway or sensor may go without sending a reading before it is reported. It starts at 24. |
 
 ## Zigbee2MQTT
 
