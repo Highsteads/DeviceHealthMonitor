@@ -5,6 +5,11 @@ nav_order: 10
 
 # Version history
 
+## 2.13.0 — 19 October 2026
+
+- **A device that goes out with the household is not reported offline while someone is away.** A car battery monitor drops off the network whenever the car is driven, so it was reported offline on every trip. A device listed in `presence_gated.json` is now held back while a presence device reads away. If a presence device is missing or unreadable, the alert goes out as before.
+- The [Dashboards](https://highsteads.github.io/Dashboards/) System Health page says "out of contact while someone is away" for the same device, instead of "unreachable".
+
 The newest version is at the top.
 
 ## 2.12.0 — 5 October 2026

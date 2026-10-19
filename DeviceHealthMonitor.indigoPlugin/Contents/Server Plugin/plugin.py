@@ -6,7 +6,16 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        05-10-2026 22:55 BST
-# Version:     2.12.0
+# Version:     2.13.0
+#
+# v2.13.0 (19-10-2026): A DEVICE THAT GOES OUT WITH THE HOUSEHOLD IS NOT REPORTED
+# WHILE SOMEONE IS AWAY. The Qashqai battery monitor drops off the IoT network
+# whenever the car is driven and was alerted "offline" every trip. A device named in
+# presence_gated.json is held back while a presence device reads "away". Fails
+# towards alerting: any missing, unknown or unreadable presence reading alerts as
+# before. The file is hand-made and never seeded, so the plugin ships no device ids.
+# 22 tests in tests/test_presence_gate.py, the three car-out cases verified failing
+# with the gate disabled.
 #
 # v2.12.0 (05-10-2026): A DEAD ECOWITT GATEWAY IS REPORTED. _check_ecowitt judged
 # lastChanged, and Ecowitt rewrites lastUpdateAgeSec on its gateway every 60 s and
@@ -316,7 +325,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.12.0"
+PLUGIN_VERSION = "2.13.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -353,6 +362,63 @@ QUIET_DEVICES_EXAMPLE = [
              "is normal — but a plug that never comes back is a dead plug, and "
              "two weeks says so."},
 ]
+
+# Presence gate. A device that leaves with the people in the house (a car battery
+# monitor that drops off the IoT network whenever the car is driven) is not offline
+# while a named presence device reads away. The ids are one install's, so the file
+# is never seeded and the plugin ships no entries: it is created by hand, beside
+# quiet_devices.json, and an absent file means every device is judged as before.
+PRESENCE_GATED_FILE = os.path.expanduser(
+    "~/Documents/Indigo/DeviceHealthMonitor/presence_gated.json"
+)
+PRESENCE_STATES = ("home", "away")
+
+
+def parse_presence_gated(data):
+    """Parse presence_gated.json: a list of {"id", "presence_ids", "name"?}.
+
+    Returns (by_id, problems). by_id maps the gated device's id to the list of
+    presence device ids to read. A bad entry is reported and skipped, and a skipped
+    entry is judged as before: the gate fails towards alerting, never away from it.
+    """
+    by_id, problems = {}, []
+    if data is None:
+        return by_id, problems
+    if not isinstance(data, list):
+        return by_id, ["the file must hold a list of entries"]
+    for entry in data:
+        if not isinstance(entry, dict):
+            problems.append(f"not an object: {entry!r}")
+            continue
+        label = entry.get("name") or entry.get("id")
+        try:
+            dev_id = int(entry["id"])
+            pids   = [int(p) for p in entry["presence_ids"]]
+        except (KeyError, TypeError, ValueError):
+            problems.append(f"{label!r} needs an integer 'id' and a list of integer 'presence_ids'")
+            continue
+        if not pids:
+            problems.append(f"{label!r} has an empty 'presence_ids' list")
+            continue
+        by_id[dev_id] = pids
+    return by_id, problems
+
+
+def presence_gate_away(states):
+    """Should an offline verdict for a presence-gated device be held back?
+
+    `states` is the raw "presence" state of each presence device, None where it
+    could not be read. The verdict is held back ONLY when every reading is a real
+    answer ("home" or "away") and at least one says away. A missing, unknown or
+    unreadable reading means alert as today: a gate that fails open would hide a
+    genuine outage behind a sensor that has simply stopped answering.
+    """
+    if not states:
+        return False
+    if any(s not in PRESENCE_STATES for s in states):
+        return False
+    return "away" in states
+
 
 _QUIET_BAD = object()   # distinct from None, which legitimately means "never"
 
@@ -908,6 +974,9 @@ class Plugin(indigo.PluginBase):
         self.offline_tol_by_id: dict[int, float | None]   = {}
         self.offline_tol_by_name: dict[str, float | None] = {}
         self._load_quiet_devices()
+        # Presence gate — gated device id -> the presence device ids to read.
+        self.presence_gated_by_id: dict[int, list[int]] = {}
+        self._load_presence_gated()
 
         # pluginId -> {"last_restart": iso|None, "restarts_today": int, "day": str, "cap_alerted": bool,
         #              plus the dry-run twins last_dry_run / dry_runs_today / dry_cap_alerted}
@@ -978,6 +1047,7 @@ class Plugin(indigo.PluginBase):
             try:
                 self._load_exclusions()       # reload each cycle — edits take effect without restart
                 self._load_quiet_devices()    # same, so a quiet threshold can be tuned live
+                self._load_presence_gated()   # and the presence gate
                 self._run_scan()
                 self._load_watchdog_config()  # reload each cycle too
                 self._run_plugin_watchdog()
@@ -1084,6 +1154,10 @@ class Plugin(indigo.PluginBase):
                 return None, None
             if offline:
                 offline, reason = self._apply_offline_tolerance(dev, reason)
+            if offline and self._presence_gate_suppresses(dev):
+                if self.debug:
+                    log(f"{dev.name}: {reason} — held back, a presence device reads away")
+                return False, ""
             return offline, reason
         except Exception as e:
             log(f"Error checking {dev.name}: {e}", level="ERROR")
@@ -1716,6 +1790,42 @@ class Plugin(indigo.PluginBase):
         """(threshold_hours, overridden) for this device. None hours = never."""
         return resolve_quiet_hours(dev.id, dev.name, default_hours,
                                    self.quiet_by_id, self.quiet_by_name)
+
+    def _load_presence_gated(self):
+        """Read presence_gated.json. Fail towards alerting: no gate on a broken file."""
+        try:
+            if not os.path.exists(PRESENCE_GATED_FILE):
+                self.presence_gated_by_id = {}
+                return
+            with open(PRESENCE_GATED_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            by_id, problems = parse_presence_gated(data)
+            self.presence_gated_by_id = by_id
+            for problem in problems:
+                log(f"Presence gate: skipped a bad entry — {problem}", level="WARNING")
+            if self.debug:
+                log(f"Loaded {len(by_id)} presence-gated device(s) from file")
+        except Exception as e:
+            log(f"Failed to load presence gate file: {e}", level="ERROR")
+            self.presence_gated_by_id = {}
+
+    def _presence_gate_suppresses(self, dev):
+        """True when a presence device reads away, so this device's offline verdict is held back.
+
+        Each presence device is read from its own "presence" state. A device that
+        cannot be found or read is recorded as None, and presence_gate_away then
+        refuses to suppress, so the alert goes out as it did before the gate.
+        """
+        pids = self.presence_gated_by_id.get(dev.id)
+        if not pids:
+            return False
+        states = []
+        for pid in pids:
+            try:
+                states.append(indigo.devices[pid].states.get("presence"))
+            except Exception:
+                states.append(None)
+        return presence_gate_away(states)
 
     def _load_quiet_devices(self):
         try:

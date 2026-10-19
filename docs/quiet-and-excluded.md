@@ -51,6 +51,24 @@ It goes in the same file, as `offline_hours`:
 - The time is measured from when the device last genuinely spoke, so restarting the plugin or Indigo does not start the clock again.
 - A device that has never spoken at all is reported straight away, whatever the tolerance, because it has not been paired properly.
 
+## Devices that go out with the household
+
+A device that goes out with you, such as a battery monitor in the car, drops off the network whenever it is driven. A **presence gate** holds back its offline alert while someone is away.
+
+Write a file called `presence_gated.json` in the same folder as `quiet_devices.json`:
+
+```json
+[
+    {"id": 123456789, "presence_ids": [111111111, 222222222], "name": "Car battery monitor"}
+]
+```
+
+- **id** is the device that goes out with you.
+- **presence_ids** are the presence devices to read. The alert is held back while **any** of them reads `away`.
+- The alert is held back only when every presence device gives a clear answer, `home` or `away`. If one is missing or unknown, the alert goes out as it always did, because a sensor that has stopped answering must not hide a real fault.
+- With every presence device on `home`, the alert goes out as normal.
+- The plugin never creates this file. With no file, nothing is held back. Edits take effect at the next check, so there is no need to restart.
+
 ## Leaving a device out altogether
 
 A left-out device is never checked, so it can never be reported. That includes the day it really does die, so use this only for a device you truly never want to hear about, and prefer an away tolerance for a device that is merely off a lot.

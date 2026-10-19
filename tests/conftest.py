@@ -216,6 +216,8 @@ def plugin_mod(indigo_mod, tmp_path, monkeypatch):
                         str(tmp_path / "quiet_devices.json"))
     monkeypatch.setattr(plugin, "WATCHDOG_CONFIG_FILE",
                         str(tmp_path / "watchdog_plugins.json"))
+    monkeypatch.setattr(plugin, "PRESENCE_GATED_FILE",
+                        str(tmp_path / "presence_gated.json"))
     return plugin
 
 
