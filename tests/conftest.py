@@ -123,13 +123,18 @@ class FakeServer:
 
 
 class FakePushoverPlugin:
-    def __init__(self, enabled=True, raises=False):
+    def __init__(self, enabled=True, raises=False, running=True):
         self._enabled = enabled
         self.raises   = raises
+        self.running  = running
         self.sent     = []
 
     def isEnabled(self):
         return self._enabled
+
+    def isRunning(self):
+        # plugin.py checks this from 2.14.0: enabled but not running delivers nothing.
+        return self.running
 
     def executeAction(self, action_id, props=None):
         if self.raises:

@@ -5,6 +5,11 @@ nav_order: 10
 
 # Version history
 
+## 2.14.0 — 1 November 2026
+
+- **An alert Pushover refused is no longer lost for good.** The Pushover plugin records a refused message (a wrong key, the monthly limit, no internet) in its own log and tells this plugin nothing, so the device was counted as reported when nobody had been told. Once a day, at the first check after 9 am, one message headed **Device Health: N still offline** now lists every device that is still offline. Set the hour, or switch it off, under **Daily reminder** in the Configure dialog. Nothing is sent on a day when every device is healthy.
+- **A Pushover plugin that has stopped running counts as a failed send.** The alert stays waiting and goes out at the first check after Pushover is running again.
+
 ## 2.13.1 — 1 November 2026
 
 - **A restart that keeps failing no longer sends an urgent message at every check.** A failed restart is now counted like a real one, so it keeps to the cooldown and the daily limit, and the daily limit ends in one "needs attention" message.

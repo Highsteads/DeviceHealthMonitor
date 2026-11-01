@@ -12,9 +12,10 @@ Each section starts with what you see, then what it means and what to do.
 The Event Log shows **[OFFLINE]** lines, but nothing arrives.
 
 - Look in the Event Log for a line starting **Pushover failed** or **NOT DELIVERED**. It gives the reason.
-- Check the Pushover plugin is installed and enabled, and that it sends messages when you use it on its own.
+- Check the Pushover plugin is installed, enabled and running, and that it sends messages when you use it on its own.
+- Look for an error line from the Pushover plugin itself, such as **Post Error**. Pushover refused the message, and this plugin is not told about that.
 
-The plugin keeps trying at every check until a message gets through, so once Pushover works again the waiting alert arrives by itself.
+If the Pushover plugin was disabled or not running, this plugin keeps trying at every check, so the waiting alert arrives by itself once Pushover is running again. If Pushover refused the message, the device appears in the next daily reminder instead.
 
 ## A healthy device keeps being reported
 

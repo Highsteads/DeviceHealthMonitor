@@ -21,7 +21,9 @@ Everything found offline in one check goes into a single Pushover message, heade
 
 Each outage is sent once. A device that stays offline is not sent again at the next check, or the one after, however long it stays away. The plugin remembers which devices it has already told you about, and keeps that list when Indigo or the plugin restarts, so a restart does not send them all again.
 
-A device is only added to that list once the message has actually gone. If the Pushover plugin is disabled or the message fails, the Event Log says so and the plugin tries again at every check until it gets through.
+A device is only added to that list once the message has been handed to the Pushover plugin. If the Pushover plugin is disabled or not running, the Event Log says so and the plugin tries again at every check until it gets through.
+
+The Pushover plugin does not say whether Pushover itself accepted a message. If Pushover refuses one (a wrong key, the monthly limit, no internet), the refusal appears in the Pushover plugin's lines in the Event Log, and this plugin cannot see it. So once a day, at the first check after the reminder hour (9 am unless you change it), one message headed **Device Health: N still offline** lists every device that is still offline, with how long it has been away. A lost alert therefore reaches you within a day. Nothing is sent on a day when every device is healthy.
 
 ## Coming back
 

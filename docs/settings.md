@@ -33,6 +33,13 @@ Open these with **Plugins → Device Health Monitor → Configure**. A change ta
 | **Z2M device stale threshold (hours)** | How long a Zigbee device may say nothing before it is reported, or for a mains device, before it is asked directly. It starts at 12, which is long enough for battery sensors that report rarely. |
 | **Grace before trusting an offline flag (minutes)** | When Zigbee2MQTT marks a device offline, how long the device must also have been silent before the plugin believes it. It starts at 30. Setting it to 0 means every offline mark is acted on as soon as it is seen. A mains device is still asked directly before it is reported, whatever this is set to. |
 
+## Daily reminder
+
+| Setting | What it does |
+|---|---|
+| **Send a daily reminder of devices still offline** | Once a day, one Pushover message lists every device that is still offline. It is there because the Pushover plugin does not tell this plugin when Pushover refuses a message, so a lost alert reaches you within a day. Nothing is sent on a day when every device is healthy. It starts ticked. |
+| **Reminder hour (0-23)** | The reminder goes at the first check at or after this hour. It starts at 9. |
+
 ## Plugin watchdog
 
 | Setting | What it does |

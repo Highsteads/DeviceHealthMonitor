@@ -33,4 +33,5 @@ few milliseconds above the nominal figure, so no test sits on a boundary.
 
 | `test_watchdog_restart.py` | Watchdog verdicts (ok / crashed / wedged / transmit-only / post-restart grace) and the live restart path. a failing restart keeps to the cooldown and cap, a "needs attention" alert is retried until delivered, and the start-up / wake grace (all 2.13.1) |
 | `test_menus_and_callbacks.py` | Every callback named in the XML exists in plugin.py, and every menu item runs |
+| `test_pushover_delivery.py` | A stopped Pushover plugin is a failed send, and the daily reminder of devices still offline (2.14.0) |
 | `test_changelog.py` | `docs/changelog.md` has an entry for the Info.plist version, at the top |

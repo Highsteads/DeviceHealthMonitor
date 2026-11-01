@@ -6,7 +6,15 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        01-11-2026
-# Version:     2.13.1
+# Version:     2.14.0
+#
+# v2.14.0 (01-11-2026): A LOST PUSHOVER IS NO LONGER LOST FOR GOOD. The Pushover
+# plugin's send action (IndigoDomotics/indigo-pushover 2022.0.2, read 01-11-2026)
+# logs a refused message in its own log and returns nothing, so "delivered" here only
+# ever meant "handed over". Two changes that do not depend on Pushover answering:
+# (1) a Pushover plugin that is enabled but NOT RUNNING counts as a failed send, so
+# the alert stays pending and is retried; (2) a once-a-day reminder lists every
+# device still latched offline, so an alert Pushover refused reaches you within a day.
 #
 # v2.13.1 (01-11-2026): THREE WATCHDOG FAULTS FIXED. (1) A restart that raised an
 # error recorded nothing, so the cooldown and daily cap never applied and a
@@ -333,9 +341,13 @@ def monitored_protocols_label():
 
 PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
+# A device must have been latched offline at least this long to be in the daily
+# reminder, so a device first reported minutes before the reminder is not sent twice.
+REMINDER_MIN_AGE_HOURS = 1
+
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.13.1"
+PLUGIN_VERSION = "2.14.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -1035,6 +1047,9 @@ class Plugin(indigo.PluginBase):
         self.watchdog_enabled          = as_bool(values.get("watchdogEnabled", True), True)
         self.watchdog_dry_run          = as_bool(values.get("watchdogDryRun", True), True)
         self.watchdog_discovered_stale = _as_float(values.get("watchdogDefaultStaleMin", 60), 60)
+        # Daily reminder of devices still offline (2.14.0). Hour clamped to 0-23.
+        self.daily_reminder            = as_bool(values.get("dailyReminder", True), True)
+        self.daily_reminder_hour       = min(max(_as_int(values.get("dailyReminderHour", 9), 9), 0), 23)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1144,6 +1159,7 @@ class Plugin(indigo.PluginBase):
                     self._undelivered.add(dev_id)
 
         self._persist_alerted()
+        self._maybe_send_daily_reminder(now)
 
         if self.debug:
             log(f"Scan complete — {len(pending)} new offline, {len(recovered)} recovered, "
@@ -1917,11 +1933,21 @@ class Plugin(indigo.PluginBase):
     # ------------------------------------------------------------------
 
     def _send_pushover(self, title, body, priority="0", sound="vibrate"):
-        """Send a single Pushover message. Returns True on success."""
+        """Send a single Pushover message. Returns True if it was HANDED OVER.
+
+        True cannot mean delivered: the Pushover plugin's send action logs a refused
+        message (bad key, quota, no internet) in its own log and returns nothing. The
+        daily reminder (_maybe_send_daily_reminder) is the backstop for that.
+        """
         try:
             plugin = indigo.server.getPlugin(PUSHOVER_PLUGIN_ID)
             if not plugin.isEnabled():
                 raise RuntimeError("Pushover plugin not enabled")
+            # Enabled but crashed or stopped: executeAction would hand the message to
+            # nobody and nothing would say so (2.14.0). Pushover is on the watchdog's
+            # never-restart list, so this is the only place that notices it.
+            if not plugin.isRunning():
+                raise RuntimeError("Pushover plugin enabled but not running")
             plugin.executeAction("send", props={
                 "msgTitle":    title,
                 "msgBody":     body,
@@ -1932,6 +1958,48 @@ class Plugin(indigo.PluginBase):
         except Exception as e:
             log(f"Pushover failed ({e}) — {title}: {body}", level="WARNING")
             return False
+
+    def _maybe_send_daily_reminder(self, now):
+        """Once a day, list every device still latched offline. (2.14.0)
+
+        The backstop for an alert Pushover refused: its plugin logs the refusal and
+        tells us nothing, so the device was latched as reported when nobody had been
+        told. Sent at the first scan at or after daily_reminder_hour, only when there
+        is something to say. The day is marked done ONLY when the send succeeds, and
+        is kept in pluginPrefs so a plugin restart does not send it a second time.
+        """
+        if not self.daily_reminder:
+            return
+        today = now.strftime("%Y-%m-%d")
+        if now.hour < self.daily_reminder_hour:
+            return
+        if self.pluginPrefs.get("last_reminder_day", "") == today:
+            return
+        lines = []
+        for dev_id, since in sorted(self.alerted.items(), key=lambda kv: kv[1]):
+            hours = self._hours_since(since, now)
+            if hours < REMINDER_MIN_AGE_HOURS:
+                continue
+            try:
+                name = indigo.devices[dev_id].name
+            except Exception:
+                continue            # deleted; the scan clears its latch
+            when = since.strftime("%H:%M %d-%b")
+            lines.append(f"- {name} (offline since {when}, {hours:.0f}h)")
+        if not lines:
+            return
+        title = f"Device Health: {len(lines)} still offline"
+        if self._send_pushover(title, "\n".join(lines), priority="0"):
+            self.pluginPrefs["last_reminder_day"] = today
+            try:
+                indigo.server.savePluginPrefs()
+            except Exception as e:
+                log(f"Could not save the reminder date ({e}) — a restart today may "
+                    f"send it again", level="WARNING")
+            log(f"Daily reminder sent: {len(lines)} device(s) still offline")
+        else:
+            log(f"Daily reminder NOT DELIVERED — {len(lines)} device(s) still offline, "
+                f"retrying next scan", level="ERROR")
 
     def _alert_pushover(self, offline_list):
         """Send one consolidated alert. Returns True only if it was DELIVERED.

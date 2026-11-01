@@ -67,6 +67,20 @@
         <Label>Some sensors report only when something happens — a cupboard door that opens twice a week is healthy after days of silence, but every threshold above would call it offline. Give any such device a longer threshold of its own in quiet_devices.json (written on first run, in the same folder as the exclusions file). Entries take a device id or name plus a number of hours, or "never". Edits apply on the next scan, with no restart. A hard fault still alerts either way. Use "Show Quiet Devices" to see what is in force.</Label>
     </Field>
 
+    <Field id="sep_reminder" type="separator"/>
+    <Field id="label_reminder" type="label">
+        <Label>Daily reminder</Label>
+    </Field>
+    <Field id="dailyReminder" type="checkbox" defaultValue="true">
+        <Label>Send a daily reminder of devices still offline</Label>
+    </Field>
+    <Field id="dailyReminderHour" type="textfield" defaultValue="9" visibleBindingId="dailyReminder" visibleBindingValue="true">
+        <Label>Reminder hour (0-23)</Label>
+    </Field>
+    <Field id="label_reminder_info" type="label">
+        <Label>The Pushover plugin does not tell this plugin when Pushover refuses a message, so an alert can be lost without anyone knowing. Once a day, at the first check after this hour, one message lists every device that is still offline. A lost alert therefore reaches you within a day. Nothing is sent on a day when every device is healthy.</Label>
+    </Field>
+
     <Field id="sep_watchdog" type="separator"/>
     <Field id="label_watchdog" type="label">
         <Label>Plugin Watchdog — restart crashed or wedged plugins</Label>
