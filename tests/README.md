@@ -31,6 +31,6 @@ few milliseconds above the nominal figure, so no test sits on a boundary.
 | `test_watchdog_migration.py` | The one-shot v1 config reconciliation: untouched seeds dropped, real edits kept |
 | `test_config_coercion.py` | Blank and garbage config values, and `as_bool` not being fooled by the string `"false"` |
 
-| `test_watchdog_restart.py` | Watchdog verdicts (ok / crashed / wedged / transmit-only / post-restart grace) and the live restart path. Two `xfail` tests mark known faults: a failing restart pages at every scan, and a lost "needs attention" alert is never retried |
+| `test_watchdog_restart.py` | Watchdog verdicts (ok / crashed / wedged / transmit-only / post-restart grace) and the live restart path. a failing restart keeps to the cooldown and cap, a "needs attention" alert is retried until delivered, and the start-up / wake grace (all 2.13.1) |
 | `test_menus_and_callbacks.py` | Every callback named in the XML exists in plugin.py, and every menu item runs |
 | `test_changelog.py` | `docs/changelog.md` has an entry for the Info.plist version, at the top |

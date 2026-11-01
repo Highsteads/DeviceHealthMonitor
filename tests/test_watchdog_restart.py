@@ -3,15 +3,13 @@
 # Filename:    test_watchdog_restart.py
 # Description: The plugin watchdog's verdicts (_assess_plugin_health) and the LIVE
 #              restart path of _maybe_restart_plugin: cooldown, daily cap, and what
-#              happens when a restart or the Pushover about it fails. tests/README.md
-#              listed this machinery as not covered.
+#              happens when a restart or the Pushover about it fails, and the
+#              start-up / wake grace added in 2.13.1.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        01-11-2026
-# Version:     1.0
+# Version:     1.1
 
 from datetime import datetime, timedelta
-
-import pytest
 
 from conftest import FakeDevice
 
@@ -134,25 +132,19 @@ def test_live_restart_is_issued_and_announced(indigo_mod, plugin, pushover):
     assert any("restarted" in p["msgTitle"] for _, p in pushover.sent)
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: a restart that raises records nothing (no last_restart, no count), so the "
-    "cooldown and the daily cap never apply and a priority-1 'restart FAILED' Pushover "
-    "goes out at every scan for as long as the fault lasts. plugin.py _maybe_restart_plugin."))
 def test_a_failing_restart_does_not_page_at_every_scan(indigo_mod, plugin, pushover):
+    """Fixed in 2.13.1: a failed attempt counts toward the cooldown and daily cap."""
     indigo_mod.server.plugins[PID] = FakeWatchedPlugin(restart_raises=RuntimeError("boom"))
     plugin.watchdog_dry_run = False
     for i in range(12):                                  # two hours of 10-minute scans
         live_check(plugin, T0 + timedelta(minutes=10 * i))
-    failed = [p for _, p in pushover.sent if "FAILED" in p["msgTitle"]]
-    assert len(failed) <= POLICY["max_per_day"] + 1
+    titles = [p["msgTitle"] for _, p in pushover.sent]
+    assert len([t for t in titles if "FAILED" in t]) == POLICY["max_per_day"]
+    assert len([t for t in titles if "needs attention" in t]) == 1
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "BUG: the once-a-day 'needs attention' latch (cap_alerted) is set BEFORE the "
-    "Pushover is sent and the send result is ignored, so if Pushover is down at that "
-    "moment the only alert that a plugin is beyond automatic repair is lost for the "
-    "rest of the day. plugin.py _maybe_restart_plugin."))
 def test_needs_attention_alert_is_retried_if_pushover_failed(indigo_mod, plugin, pushover):
+    """Fixed in 2.13.1: the latch is set only once the Pushover is delivered."""
     indigo_mod.server.plugins[PID] = FakeWatchedPlugin()
     plugin.watchdog_dry_run = False
     live_check(plugin, T0)
@@ -161,4 +153,88 @@ def test_needs_attention_alert_is_retried_if_pushover_failed(indigo_mod, plugin,
     live_check(plugin, T0 + timedelta(minutes=80))       # cap alert attempted, lost
     pushover.raises = False
     live_check(plugin, T0 + timedelta(minutes=90))
-    assert any("needs attention" in p["msgTitle"] for _, p in pushover.sent)
+    live_check(plugin, T0 + timedelta(minutes=100))      # delivered: no repeat
+    assert len([p for _, p in pushover.sent if "needs attention" in p["msgTitle"]]) == 1
+
+
+def test_dry_run_attention_alert_is_also_retried(indigo_mod, plugin, pushover):
+    indigo_mod.server.plugins[PID] = FakeWatchedPlugin()
+    plugin.watchdog_dry_run = True
+    live_check(plugin, T0)
+    live_check(plugin, T0 + timedelta(minutes=40))
+    pushover.raises = True
+    live_check(plugin, T0 + timedelta(minutes=80))
+    pushover.raises = False
+    live_check(plugin, T0 + timedelta(minutes=90))
+    assert any("would need attention" in p["msgTitle"] for _, p in pushover.sent)
+
+
+# --------------------------------------------------------------------------
+# Start-up / wake grace (2.13.1)
+# --------------------------------------------------------------------------
+
+class FrozenClock:
+    """Pins plugin.datetime.now() so _run_plugin_watchdog can be walked through time."""
+
+    def __init__(self, plugin_mod, monkeypatch, start):
+        self.now = start
+        real = plugin_mod.datetime
+        clock = self
+
+        class _DT(real):
+            @classmethod
+            def now(cls, tz=None):
+                return clock.now
+        monkeypatch.setattr(plugin_mod, "datetime", _DT)
+
+
+def crashed_setup(plugin_mod, indigo_mod, plugin, monkeypatch):
+    watched = FakeWatchedPlugin(running=False)
+    indigo_mod.server.plugins[PID] = watched
+    dev = FakeDevice(1, "Dev", PID)
+    dev.configured = True
+    dev.lastSuccessfulComm = T0
+    indigo_mod.devices[1] = dev
+    plugin.watchdog_enabled = True
+    plugin.watchdog_dry_run = False
+    plugin.watchdog_overrides[PID] = dict(POLICY)
+    return watched, FrozenClock(plugin_mod, monkeypatch, T0)
+
+
+def test_no_restart_in_the_first_minutes_after_start(plugin_mod, indigo_mod, plugin,
+                                                     pushover, monkeypatch):
+    watched, clock = crashed_setup(plugin_mod, indigo_mod, plugin, monkeypatch)
+    plugin._run_plugin_watchdog()
+    clock.now = T0 + timedelta(minutes=5)
+    plugin._run_plugin_watchdog()
+    assert watched.restarts == 0
+    clock.now = T0 + timedelta(minutes=plugin_mod.WATCHDOG_STARTUP_GRACE_MIN + 1)
+    plugin._run_plugin_watchdog()
+    assert watched.restarts == 1, "after the grace a crashed plugin is restarted"
+
+
+def test_a_long_gap_starts_a_new_grace(plugin_mod, indigo_mod, plugin,
+                                       pushover, monkeypatch):
+    watched, clock = crashed_setup(plugin_mod, indigo_mod, plugin, monkeypatch)
+    plugin._run_plugin_watchdog()                                    # grace starts
+    clock.now = T0 + timedelta(minutes=11)
+    plugin._run_plugin_watchdog()                                    # restart #1
+    assert watched.restarts == 1
+    clock.now = T0 + timedelta(hours=3)                              # Mac slept
+    plugin._run_plugin_watchdog()
+    clock.now = T0 + timedelta(hours=3, minutes=5)
+    plugin._run_plugin_watchdog()
+    assert watched.restarts == 1, "no judging straight after a wake"
+    clock.now = T0 + timedelta(hours=3, minutes=11)
+    plugin._run_plugin_watchdog()
+    assert watched.restarts == 2
+
+
+def test_normal_cadence_does_not_restart_the_grace(plugin_mod, indigo_mod, plugin,
+                                                   pushover, monkeypatch):
+    _, clock = crashed_setup(plugin_mod, indigo_mod, plugin, monkeypatch)
+    for i in range(6):                                               # 10-minute scans
+        clock.now = T0 + timedelta(minutes=10 * i)
+        plugin._run_plugin_watchdog()
+    grace_logs = [m for m, _ in indigo_mod.server.lines if "holding off for" in m]
+    assert len(grace_logs) == 1

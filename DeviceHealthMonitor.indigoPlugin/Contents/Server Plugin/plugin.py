@@ -5,8 +5,18 @@
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
-# Date:        05-10-2026 22:55 BST
-# Version:     2.13.0
+# Date:        01-11-2026
+# Version:     2.13.1
+#
+# v2.13.1 (01-11-2026): THREE WATCHDOG FAULTS FIXED. (1) A restart that raised an
+# error recorded nothing, so the cooldown and daily cap never applied and a
+# priority-1 "restart FAILED" Pushover went out at every scan; a failed attempt now
+# counts as an attempt. (2) The once-a-day "needs attention" alert was marked as sent
+# before Pushover was tried, so a Pushover outage at that moment lost it for the day;
+# it is now marked only once delivered, and retried each scan until then. (3) No
+# judging for WATCHDOG_STARTUP_GRACE_MIN after the plugin starts, or after a gap
+# between checks long enough to mean the Mac slept or Indigo was stopped, so plugins
+# still starting up are not called crashed or wedged.
 #
 # v2.13.0 (19-10-2026): A DEVICE THAT GOES OUT WITH THE HOUSEHOLD IS NOT REPORTED
 # WHILE SOMEONE IS AWAY. The Qashqai battery monitor drops off the IoT network
@@ -262,7 +272,7 @@ import os
 import os as _os
 import shutil
 import sys as _sys
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 import indigo  # noqa — provided by Indigo runtime
 
@@ -325,7 +335,7 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.13.0"
+PLUGIN_VERSION = "2.13.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -624,6 +634,14 @@ CLAUDEBRIDGE_ID = "com.clives.indigoplugin.claudebridge"
 # Don't re-judge a plugin for this many minutes after WE restart it (let it come
 # back up and re-establish before assessing running state / staleness again).
 POST_RESTART_GRACE_MIN = 5
+
+# Don't judge ANY plugin for this many minutes after this plugin starts, or after a
+# gap between watchdog checks longer than WATCHDOG_GAP_MIN (the Mac slept, or Indigo
+# was stopped). Plugins are still starting and devices have not reported yet, so
+# "not running" and "no comm for N minutes" mean nothing for a while. The scan's own
+# 30-second start-up wait was the only allowance before 2.13.1.
+WATCHDOG_STARTUP_GRACE_MIN = 10
+WATCHDOG_GAP_MIN           = 30
 
 # The watchdog AUTO-DISCOVERS plugins to watch: any plugin that owns at least one
 # enabled, configured device maintaining lastSuccessfulComm is a candidate, unless
@@ -987,6 +1005,10 @@ class Plugin(indigo.PluginBase):
         self.watchdog_exclude: set             = set()
         self.watchdog_discovered_default: dict = {}
         self._load_watchdog_config()
+        # Start-up / wake grace for the watchdog (see WATCHDOG_STARTUP_GRACE_MIN).
+        # In memory on purpose: a restart of this plugin should start a fresh grace.
+        self._watchdog_last_run: datetime | None    = None
+        self._watchdog_grace_until: datetime | None = None
 
         # Startup banner moved to showPluginInfo on demand (revised 25-May-2026 per Jay).
 
@@ -2091,6 +2113,8 @@ class Plugin(indigo.PluginBase):
             return
         now = datetime.now()
         self._roll_restart_day(now)
+        if self._watchdog_in_grace(now):
+            return
 
         plugin_devices: dict = {}
         for dev in indigo.devices:
@@ -2111,6 +2135,30 @@ class Plugin(indigo.PluginBase):
                 log(f"Watchdog: error assessing {pid}: {e}", level="ERROR")
 
         self._persist_watchdog_state()
+
+    def _watchdog_in_grace(self, now):
+        """True while the watchdog should not judge anything (start-up or wake).
+
+        A grace starts on the first check after this plugin starts, and again
+        whenever the gap since the previous check exceeds WATCHDOG_GAP_MIN — the
+        Mac slept or Indigo was stopped, so every plugin's devices look stale at
+        once and some plugins may not be running yet. Logged once when it starts.
+        """
+        last = self._watchdog_last_run
+        self._watchdog_last_run = now
+        gap_min = None if last is None else (now - last).total_seconds() / 60.0
+        if last is None or gap_min > WATCHDOG_GAP_MIN:
+            self._watchdog_grace_until = now + timedelta(minutes=WATCHDOG_STARTUP_GRACE_MIN)
+            why = ("plugin start" if last is None
+                   else f"a {gap_min:.0f}-minute gap since the last check (sleep or Indigo stop)")
+            log(f"Watchdog: holding off for {WATCHDOG_STARTUP_GRACE_MIN} minutes after "
+                f"{why}, so plugins still starting up are not judged")
+        if self._watchdog_grace_until is not None and now < self._watchdog_grace_until:
+            if self.debug:
+                log(f"Watchdog: start-up grace until "
+                    f"{self._watchdog_grace_until.strftime('%H:%M:%S')} — not judging")
+            return True
+        return False
 
     def _assess_plugin_health(self, pid, policy, devs, now):
         """Return (verdict, reason); verdict in ok / crashed / wedged / unavailable."""
@@ -2175,19 +2223,28 @@ class Plugin(indigo.PluginBase):
 
         if count >= max_per_day:
             if not rec.get(cap_key):
-                rec[cap_key] = True
+                # Latched ONLY once delivered (2.13.1). It used to be set before the
+                # send, so a Pushover outage at this moment lost the one alert that
+                # says a plugin is beyond automatic repair, for the rest of the day.
+                # Until delivered it is retried at every check.
                 if dry:
                     msg = (f"{label} still {verdict} after {count} dry-run restart(s) today "
                            f"(daily cap {max_per_day}). Live, it would now stop and ask for "
                            f"attention. {reason}")
                     log(f"[DRY RUN] {msg}", level="WARNING")
-                    self._send_pushover(f"[DRY RUN] Watchdog: {label} would need attention",
-                                        msg, priority="0")
+                    sent = self._send_pushover(f"[DRY RUN] Watchdog: {label} would need attention",
+                                               msg, priority="0")
                 else:
                     msg = (f"{label} still {verdict} after {count} restart(s) today "
                            f"(daily cap {max_per_day}). Needs manual attention. {reason}")
                     log(msg, level="ERROR")
-                    self._send_pushover(f"Watchdog: {label} needs attention", msg, priority="1")
+                    sent = self._send_pushover(f"Watchdog: {label} needs attention",
+                                               msg, priority="1")
+                if sent:
+                    rec[cap_key] = True
+                else:
+                    log(f"Watchdog: the 'needs attention' alert for {label} was NOT "
+                        f"delivered — retrying at the next check", level="ERROR")
             return
 
         if dry:
@@ -2206,8 +2263,17 @@ class Plugin(indigo.PluginBase):
             except TypeError:
                 indigo.server.getPlugin(pid).restart()
         except Exception as e:
-            log(f"Watchdog: restart of {label} FAILED: {e}", level="ERROR")
-            self._send_pushover(f"Watchdog: {label} restart FAILED", str(e), priority="1")
+            # A failed attempt COUNTS as an attempt (2.13.1). Recording nothing meant
+            # the cooldown and daily cap never applied, so this priority-1 alert went
+            # out at every scan for as long as the fault lasted. Now it is paced like
+            # a restart, and the daily cap ends in the 'needs attention' alert.
+            rec["last_restart"]   = now.isoformat()
+            rec["restarts_today"] = _as_int(rec.get("restarts_today", 0), 0) + 1
+            rec["cap_alerted"]    = False
+            log(f"Watchdog: restart of {label} FAILED (attempt #{rec['restarts_today']} "
+                f"today): {e}", level="ERROR")
+            self._send_pushover(f"Watchdog: {label} restart FAILED",
+                                f"{e}\nAttempt #{rec['restarts_today']} today.", priority="1")
             return
 
         rec["last_restart"]   = now.isoformat()

@@ -2,7 +2,7 @@
 
 **Tells your phone when a device in Indigo stops answering, and restarts a plugin that has stopped working.**
 
-**Version:** 2.13.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
+**Version:** 2.13.1 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
 
 **[Read the full guide](https://highsteads.github.io/DeviceHealthMonitor/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -48,6 +48,8 @@ The plugin watchdog works with almost any plugin that runs devices.
 The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v2.13.1** — Three plugin-watchdog fixes. A restart that keeps failing no longer sends an urgent message at every check. The "needs attention" message is retried if Pushover could not send it. The watchdog waits 10 minutes after the plugin starts, or after the Mac has slept, before judging any plugin.
 
 **v2.13.0** — A device that goes out with the household is not reported offline while someone is away. A car battery monitor drops off the network whenever the car is driven, so it was reported on every trip. You name the device in a file you write yourself; see the guide.
 

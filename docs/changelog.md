@@ -5,6 +5,12 @@ nav_order: 10
 
 # Version history
 
+## 2.13.1 — 1 November 2026
+
+- **A restart that keeps failing no longer sends an urgent message at every check.** A failed restart is now counted like a real one, so it keeps to the cooldown and the daily limit, and the daily limit ends in one "needs attention" message.
+- **The "needs attention" message is not lost if Pushover is down.** It used to be marked as sent before Pushover was tried. It is now retried at every check until it gets through.
+- **No false "crashed" or "wedged" verdicts just after start-up.** The watchdog waits 10 minutes after the plugin starts, and after a gap of more than 30 minutes between checks (the Mac slept, or Indigo was stopped), before judging any plugin. The device checks are not affected.
+
 ## 2.13.0 — 19 October 2026
 
 - **A device that goes out with the household is not reported offline while someone is away.** A car battery monitor drops off the network whenever the car is driven, so it was reported offline on every trip. A device listed in `presence_gated.json` is now held back while a presence device reads away. If a presence device is missing or unreadable, the alert goes out as before.
