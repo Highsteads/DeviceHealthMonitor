@@ -31,5 +31,6 @@ few milliseconds above the nominal figure, so no test sits on a boundary.
 | `test_watchdog_migration.py` | The one-shot v1 config reconciliation: untouched seeds dropped, real edits kept |
 | `test_config_coercion.py` | Blank and garbage config values, and `as_bool` not being fooled by the string `"false"` |
 
-Not covered: the plugin watchdog's restart machinery (cooldowns, daily caps,
-`_assess_plugin_health`) and the menu callbacks.
+| `test_watchdog_restart.py` | Watchdog verdicts (ok / crashed / wedged / transmit-only / post-restart grace) and the live restart path. Two `xfail` tests mark known faults: a failing restart pages at every scan, and a lost "needs attention" alert is never retried |
+| `test_menus_and_callbacks.py` | Every callback named in the XML exists in plugin.py, and every menu item runs |
+| `test_changelog.py` | `docs/changelog.md` has an entry for the Info.plist version, at the top |
