@@ -35,4 +35,5 @@ few milliseconds above the nominal figure, so no test sits on a boundary.
 | `test_menus_and_callbacks.py` | Every callback named in the XML exists in plugin.py, and every menu item runs |
 | `test_pushover_delivery.py` | A stopped Pushover plugin is a failed send, and the daily reminder of devices still offline (2.14.0) |
 | `test_disabled_devices.py` | A disabled watched device has its latch cleared and is logged when disabled and re-enabled (2.14.1) |
+| `test_last_seen.py` | Every lastSeen format z2m and ESPHome can write, and the once-per-device warning when one cannot be read (2.14.2) |
 | `test_changelog.py` | `docs/changelog.md` has an entry for the Info.plist version, at the top |

@@ -5,6 +5,10 @@ nav_order: 10
 
 # Version history
 
+## 2.14.2 — 1 November 2026
+
+- **A "last seen" time in an unexpected format no longer switches a check off in silence.** Zigbee and ESPHome devices are judged on when they were last seen, and only two exact ways of writing that time were understood. A time with fractions of a second, a time zone, or written as a plain number could not be read, and then the "not seen for" check and any away tolerance stopped working for that device with nothing in the log. All of those are now read. If a value still cannot be read, the Event Log gives a warning for that device, once.
+
 ## 2.14.1 — 1 November 2026
 
 - **A disabled device no longer drops out of watching in silence.** The Event Log now says when a watched device is disabled in Indigo, and again when it is enabled. Each time the plugin starts, one line lists the watched devices that are disabled.

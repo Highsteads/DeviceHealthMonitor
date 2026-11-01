@@ -6,7 +6,14 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        01-11-2026
-# Version:     2.14.1
+# Version:     2.14.2
+#
+# v2.14.2 (01-11-2026): AN UNREADABLE lastSeen NO LONGER SWITCHES A CHECK OFF IN
+# SILENCE. Only two exact formats were read, so a lastSeen carrying fractions of a
+# second, a time zone or an epoch number gave no clock: the z2m "not seen for N
+# hours" check and every away tolerance stopped working with nothing in the log,
+# and the z2m offline grace was skipped. parse_last_seen now reads all of those,
+# and a value it still cannot read is logged as a WARNING once per device.
 #
 # v2.14.1 (01-11-2026): A DISABLED DEVICE NO LONGER DROPS OUT IN SILENCE. Disabled
 # devices were skipped before anything else, so nothing said a watched device had
@@ -355,7 +362,7 @@ REMINDER_MIN_AGE_HOURS = 1
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.14.1"
+PLUGIN_VERSION = "2.14.2"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -585,6 +592,40 @@ def resolve_quiet_hours(dev_id, dev_name, default_hours, by_id, by_name):
     if key in by_name:
         return by_name[key], True
     return default_hours, False
+
+
+def parse_last_seen(raw):
+    """A device's lastSeen state as a naive LOCAL datetime, or None if unreadable.
+
+    Reads every shape zigbee2mqtt's last_seen setting can produce, and ESPHome's:
+      * ISO text, with a 'T' or a space, with or without fractions of a second,
+        with or without a time zone ('Z' or '+01:00'). A zoned value is turned into
+        local time, because every age here is measured against datetime.now().
+      * an epoch number, in seconds or milliseconds (z2m's 'epoch' option), as a
+        number or as text.
+    A result outside 2000-2100 is treated as unreadable rather than believed.
+    Until 2.14.2 only '%Y-%m-%dT%H:%M:%S' and '%Y-%m-%d %H:%M:%S' were read.
+    """
+    if raw is None or isinstance(raw, bool):
+        return None
+    try:
+        if isinstance(raw, (int, float)) or str(raw).strip().replace(".", "", 1).isdigit():
+            num = float(raw)
+            if num > 1e11:                       # milliseconds
+                num /= 1000.0
+            seen = datetime.fromtimestamp(num)
+        else:
+            text = str(raw).strip()
+            if not text:
+                return None
+            seen = datetime.fromisoformat(text.replace("Z", "+00:00"))
+            if seen.tzinfo is not None:
+                seen = seen.astimezone().replace(tzinfo=None)
+    except (ValueError, TypeError, OverflowError, OSError):
+        return None
+    if not 2000 <= seen.year <= 2100:
+        return None
+    return seen
 
 
 # ---------------------------------------------------------------------------
@@ -1000,6 +1041,8 @@ class Plugin(indigo.PluginBase):
         # Ids of WATCHED devices that were disabled at the last scan, so a change
         # either way is logged once. None until the first scan, which logs a summary.
         self._disabled_ids: set[int] | None = None
+        # Devices already warned about for an unreadable lastSeen (2.14.2).
+        self._unreadable_seen: set[int] = set()
 
         # Exclusion list (set of lowercase device names) for the device-level scan
         self.excluded_names: set[str] = set()
@@ -1366,18 +1409,37 @@ class Plugin(indigo.PluginBase):
         4.1 hours, so the default threshold keeps threefold headroom.
         """
         if MONITORED_PLUGINS.get(pluginId) in ("esphome", "z2m"):
-            raw = (states or {}).get("lastSeen")
-            if raw:
-                for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
-                    try:
-                        return datetime.strptime(str(raw), fmt)
-                    except (ValueError, TypeError):
-                        continue
-                # Unparseable: fall through rather than guess. Returning the
-                # comm time here would reinstate the never-expiring tolerance.
-                return None
-            return None
+            # Unparseable gives None rather than a guess: returning the comm time
+            # here would reinstate the never-expiring tolerance. _device_clock
+            # logs it, so the lost check is never silent (2.14.2).
+            return parse_last_seen((states or {}).get("lastSeen"))
         return last_successful_comm
+
+    def _device_clock(self, dev):
+        """away_clock for a device, warning ONCE per device if its lastSeen is unreadable.
+
+        An unreadable lastSeen turns off the silence check and the away tolerance
+        for that device, so it must be said, once, and said again if it recurs after
+        a readable value. A missing or empty lastSeen is not warned about: that is a
+        device which has not reported one yet, and the callers already say so.
+        """
+        states = getattr(dev, "states", None)
+        last   = self.away_clock(getattr(dev, "pluginId", ""), states, dev.lastSuccessfulComm)
+        raw    = (states or {}).get("lastSeen") if states is not None else None
+        unreadable = (last is None and raw not in (None, "")
+                      and MONITORED_PLUGINS.get(getattr(dev, "pluginId", "")) in ("esphome", "z2m"))
+        # Created on first use as well as in __init__, so a Plugin built without
+        # __init__ (several tests do) cannot lose its health check to an AttributeError.
+        warned = self.__dict__.setdefault("_unreadable_seen", set())
+        if not unreadable:
+            warned.discard(dev.id)
+        elif dev.id not in warned:
+            warned.add(dev.id)
+            log(f"{dev.name}: cannot read its lastSeen value {raw!r}, so its "
+                f"'not seen for' check and any away tolerance are not working for it. "
+                f"Please report this value so the plugin can be taught to read it.",
+                level="WARNING")
+        return last
 
     def _apply_offline_tolerance(self, dev, reason):
         """Hold back a verdict for a device that is allowed to be away a while.
@@ -1408,9 +1470,7 @@ class Plugin(indigo.PluginBase):
         # getattr on states too: this runs for every protocol, and only the
         # ESPHome branch reads them — a device object without them must not
         # take the whole health check down.
-        last = self.away_clock(getattr(dev, "pluginId", ""),
-                               getattr(dev, "states", None),
-                               dev.lastSuccessfulComm)
+        last = self._device_clock(dev)
         if last is None:
             return True, f"{reason} — never communicated, so the away tolerance cannot apply"
         away = self._hours_since(last)
@@ -1425,8 +1485,7 @@ class Plugin(indigo.PluginBase):
         #
         # The clock is the device's own `lastSeen`, NOT lastSuccessfulComm — see
         # away_clock for the 18-09-2026 measurement that made this leg inert.
-        last = self.away_clock(dev.pluginId, getattr(dev, "states", None),
-                               dev.lastSuccessfulComm)
+        last = self._device_clock(dev)
         if last is not None:
             thresh, quiet = self._threshold_for(dev, self.z2m_stale_hours)
             hours = self._hours_since(last)
