@@ -5,6 +5,11 @@ nav_order: 10
 
 # Version history
 
+## 2.14.1 — 1 November 2026
+
+- **A disabled device no longer drops out of watching in silence.** The Event Log now says when a watched device is disabled in Indigo, and again when it is enabled. Each time the plugin starts, one line lists the watched devices that are disabled.
+- **A device disabled while reported offline is no longer stuck as reported.** It used to stay on the **Show Offline/Stale Devices** list for good, and if it was enabled again while still offline it was never reported. Now its report is cleared when it is disabled, so it is reported afresh if it comes back still offline.
+
 ## 2.14.0 — 1 November 2026
 
 - **An alert Pushover refused is no longer lost for good.** The Pushover plugin records a refused message (a wrong key, the monthly limit, no internet) in its own log and tells this plugin nothing, so the device was counted as reported when nobody had been told. Once a day, at the first check after 9 am, one message headed **Device Health: N still offline** now lists every device that is still offline. Set the hour, or switch it off, under **Daily reminder** in the Configure dialog. Nothing is sent on a day when every device is healthy.

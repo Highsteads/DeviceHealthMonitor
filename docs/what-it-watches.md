@@ -7,7 +7,7 @@ nav_order: 3
 
 The plugin checks enabled devices that belong to the plugins below. Everything else in Indigo — virtual devices, timers, HomeKit bridges, devices from other plugins — is left alone by this check, although the [plugin watchdog](watchdog.md) can still look after the plugins behind them.
 
-A disabled device is never checked.
+A disabled device is never checked. The Event Log says when a watched device is disabled and when it is enabled again, and each time the plugin starts it lists the watched devices that are disabled. A device that was reported offline and is then disabled has its report cleared, so it is reported again if it is enabled while still offline.
 
 | Your devices | Through | How the plugin judges them |
 |---|---|---|

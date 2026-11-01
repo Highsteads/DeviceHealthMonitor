@@ -6,7 +6,15 @@
 #              comms plugins, restarting any that crash or wedge.
 # Author:      CliveS & Claude Opus 5.5
 # Date:        01-11-2026
-# Version:     2.14.0
+# Version:     2.14.1
+#
+# v2.14.1 (01-11-2026): A DISABLED DEVICE NO LONGER DROPS OUT IN SILENCE. Disabled
+# devices were skipped before anything else, so nothing said a watched device had
+# stopped being watched, and a device disabled while latched offline kept that latch
+# for good: still listed by Show Offline/Stale, and never alerted again if it was
+# re-enabled still dead. Now the latch is cleared when it is disabled, the log says
+# once when a watched device is disabled and again when it is re-enabled, and each
+# plugin start lists the watched devices that are disabled.
 #
 # v2.14.0 (01-11-2026): A LOST PUSHOVER IS NO LONGER LOST FOR GOOD. The Pushover
 # plugin's send action (IndigoDomotics/indigo-pushover 2022.0.2, read 01-11-2026)
@@ -347,7 +355,7 @@ REMINDER_MIN_AGE_HOURS = 1
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.14.0"
+PLUGIN_VERSION = "2.14.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -989,6 +997,10 @@ class Plugin(indigo.PluginBase):
         self._flap_counts: dict[int, int] = {}
         self._flap_said: set[int]      = set()
 
+        # Ids of WATCHED devices that were disabled at the last scan, so a change
+        # either way is logged once. None until the first scan, which logs a summary.
+        self._disabled_ids: set[int] | None = None
+
         # Exclusion list (set of lowercase device names) for the device-level scan
         self.excluded_names: set[str] = set()
         self._load_exclusions()
@@ -1097,8 +1109,13 @@ class Plugin(indigo.PluginBase):
         pending   = []   # [(dev_id, name, reason)] offline and not yet notified
         recovered = []
 
+        disabled_now: dict[int, str] = {}   # watched, not excluded, disabled: id -> name
         for dev in indigo.devices:
             if not dev.enabled:
+                if (MONITORED_PLUGINS.get(dev.pluginId) is not None
+                        and dev.name.lower() not in self.excluded_names):
+                    disabled_now[dev.id] = dev.name
+                    self._note_disabled(dev)
                 continue
             if dev.name.lower() in self.excluded_names:
                 # Excluding a device by hand-editing the file used to leave any
@@ -1138,6 +1155,8 @@ class Plugin(indigo.PluginBase):
                     recovered.append(dev.name)
                     log(f"[RECOVERED] {dev.name}")
 
+        self._note_disabled_changes(disabled_now)
+
         # A deleted device is never seen by the loop above, so its latch could
         # never be cleared and it sat in alerted_json for good — two devices
         # deleted on 27-Jul-2026 were still listed as outstanding alerts.
@@ -1164,6 +1183,40 @@ class Plugin(indigo.PluginBase):
         if self.debug:
             log(f"Scan complete — {len(pending)} new offline, {len(recovered)} recovered, "
                 f"{len(self.alerted)} total outstanding, {len(self._undelivered)} undelivered")
+
+    def _note_disabled(self, dev):
+        """A watched device is disabled: clear its latch and say so once. (2.14.1)
+
+        Clearing the latch matters twice over: a disabled device is not being
+        checked, so 'still offline' is no longer known, and if it is re-enabled
+        while still dead it must be reported afresh rather than sit under an old
+        latch that never alerts again.
+        """
+        self._undelivered.discard(dev.id)
+        if self.alerted.pop(dev.id, None) is not None:
+            log(f"Cleared alert for now-disabled device {dev.name} — it is not "
+                f"checked while disabled, and is reported afresh if it is "
+                f"re-enabled still offline")
+        if self._disabled_ids is not None and dev.id not in self._disabled_ids:
+            log(f"{dev.name} has been disabled in Indigo — it is no longer being "
+                f"checked until it is enabled again", level="WARNING")
+
+    def _note_disabled_changes(self, disabled_now):
+        """Log re-enabled devices, and on the first scan list the disabled ones."""
+        if self._disabled_ids is None:
+            if disabled_now:
+                names = ", ".join(sorted(disabled_now.values(), key=str.lower))
+                log(f"{len(disabled_now)} watched device(s) are disabled in Indigo and "
+                    f"not checked: {names}", level="WARNING")
+        else:
+            for dev_id in self._disabled_ids - set(disabled_now):
+                try:
+                    dev = indigo.devices[dev_id]
+                except Exception:
+                    continue            # deleted while disabled; nothing to watch
+                if dev.enabled:
+                    log(f"{dev.name} has been enabled again — it is being checked")
+        self._disabled_ids = set(disabled_now)
 
     # ------------------------------------------------------------------
     # Per-protocol device health checks
