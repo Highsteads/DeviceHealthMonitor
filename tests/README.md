@@ -36,5 +36,5 @@ few milliseconds above the nominal figure, so no test sits on a boundary.
 | `test_pushover_delivery.py` | A stopped Pushover plugin is a failed send, and the daily reminder of devices still offline (2.14.0) |
 | `test_disabled_devices.py` | A disabled watched device has its latch cleared and is logged when disabled and re-enabled (2.14.1) |
 | `test_last_seen.py` | Every lastSeen format z2m and ESPHome can write, and the once-per-device warning when one cannot be read (2.14.2) |
-| `test_plain_alerts.py` | Every reason reaches the phone as a sentence with the raw text kept for the log, the device named in the title, flap damping on every protocol (and that a muted drop is reported the next day, across a restart), the reminder's last-heard wording and its minimum age (2.15.0) |
+| `test_plain_alerts.py` | Every reason reaches the phone as a sentence with the raw text kept for the log, the device named in the title, flap damping on every protocol over a rolling week (one drop a day still counts, a held-back drop that lasts three hours is sent, two quiet days end the silence, all of it across a restart), no last-heard time for a mains Z-Wave node, the reminder's last-heard wording and its minimum age (2.15.0) |
 | `test_changelog.py` | `docs/changelog.md` has an entry for the Info.plist version, at the top |

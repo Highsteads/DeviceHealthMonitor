@@ -14,12 +14,16 @@
 # with a body like "- Twigs Plug (deviceOnline=False)". (1) Every check hands back
 # a Reason: the raw text for the [OFFLINE] log line, and a plain sentence for the
 # message. One device is named in the title ("Twigs Plug has stopped answering").
-# (2) Flap damping for every protocol: after flapLimitPerDay drops in a day
-# (default 3) the next drop is sent once, saying how many, and later drops that day
-# are logged and latched without a Pushover; one still offline the next day is
-# reported afresh, and the mute is persisted so a restart cannot lose it. (3) The
-# time a device was LAST HEARD FROM is stored with the latch where an honest clock
-# exists (z2m, ESPHome, Ecowitt, Z-Wave) and the daily reminder gives that, in
+# (2) Flap damping for every protocol, over a rolling week: once a device has
+# dropped more than flapLimitPerWeek times (default 3) in seven days the drop is
+# sent once as "keeps dropping out", saying how many, and its later drops are
+# logged and latched without a Pushover until it has gone two days without one.
+# A held-back drop that lasts three hours is sent as "has stayed offline". The
+# count, the notice and the mute are all persisted. (A count per calendar day was
+# tried first: replayed against two weeks of logs it would have sent 70 of 76.)
+# (3) The time a device was LAST HEARD FROM is stored with the latch where an
+# honest clock exists (z2m, ESPHome, Ecowitt, battery Z-Wave) and the daily
+# reminder gives that, in
 # words, rather than the moment a threshold tripped. (4) The reminder leaves a
 # device out until it has been reported for reminderMinAgeHours (default 12, was a
 # fixed 1), so it no longer follows the first alert within the hour. Bodies are
@@ -308,6 +312,7 @@
 # live-editable exclusions file.
 
 import json
+import math
 import os
 import os as _os
 import shutil
@@ -380,11 +385,25 @@ PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 # 08:48 then 09:48). The default for the reminderMinAgeHours setting.
 REMINDER_MIN_AGE_HOURS = 12
 
-# A device that has dropped out and come back this many times in one day is
-# flapping. Its next drop is reported once, saying so, and the drops after that are
-# not sent to the phone until tomorrow. The default for the flapLimitPerDay setting;
-# 0 switches the damping off.
-FLAP_LIMIT_PER_DAY = 3
+# FLAP DAMPING. A device that has dropped out and come back more than this many
+# times in the last FLAP_WINDOW_DAYS is flapping. The drop that takes it over the
+# limit is reported once, saying how many, and its later drops are not sent to the
+# phone until it has gone FLAP_QUIET_HOURS without one. The default for the
+# flapLimitPerWeek setting; 0 switches the damping off.
+#
+# A rolling week, NOT a calendar day. Replayed against the [OFFLINE] lines of
+# 27-10-2026 to 10-11-2026 (76 alerts, 14 days), a tally that reset at midnight
+# would have sent 70 of the 76: the plugs drop once or twice a day for many days
+# running (25 device-days with one drop, 8 with two, only 5 with four or more), so
+# a daily count almost never reached its limit. This rule would have sent 36.
+FLAP_LIMIT       = 3
+FLAP_WINDOW_DAYS = 7
+FLAP_QUIET_HOURS = 48
+# A drop that was not sent, and has now lasted this long, is not another flap: it
+# is sent as a device that has stayed offline. Of 185 outages with a recovery in
+# the logs of October and November 2026 (measured 10-11-2026), 164 were over
+# within 3 hours and the median was 40 minutes.
+FLAP_MUTE_MAX_HOURS = 3
 
 # Pushover cuts a body above this without saying so.
 PUSHOVER_BODY_LIMIT = 1024
@@ -462,10 +481,13 @@ def span_words(hours):
     if minutes < 59.5:
         return _counted(int(minutes + 0.5), "minute")
     value, unit = (hours, "hour") if hours < 47.5 else (hours / 24.0, "day")
-    n    = max(int(value + 0.5), 1)
-    diff = value - n
-    lead = "nearly" if diff <= -0.1 else ("over" if diff >= 0.1 else "about")
-    return f"{lead} {_counted(n, unit)}"
+    # From the WHOLE part, not the rounded value: rounding first called two and a
+    # half days "nearly three days", and the number is the one fact in the sentence.
+    n    = int(value)
+    frac = value - n
+    if frac >= 0.75:
+        return f"nearly {_counted(n + 1, unit)}"
+    return f"{'about' if frac < 0.15 else 'over'} {_counted(max(n, 1), unit)}"
 
 
 def clock_words(when):
@@ -1200,15 +1222,16 @@ class Plugin(indigo.PluginBase):
         # next day, so the reminder said "offline since 12:41 08-Nov". Only present
         # where the protocol has an honest clock; see _last_heard.
         self.last_heard: dict[int, datetime] = {}
-        # device_id -> the day (ISO) its latest drop was latched WITHOUT a Pushover,
-        # because it had already flapped past the daily limit. Persisted, so a
-        # restart cannot turn "not paged today" into "never paged": on any later
-        # day a muted device that is still offline is reported afresh.
+        # device_id -> when (ISO) its latest drop was latched WITHOUT a Pushover,
+        # because the device was already known to be flapping. Persisted, so a
+        # restart cannot turn "not sent yet" into "never sent": a muted device
+        # still offline after FLAP_MUTE_MAX_HOURS is sent as having stayed offline.
         self._muted: dict[int, str] = {}
-        # Outages per device today, for the flap damping. In memory only, like
-        # _flap_counts below: a restart can only reset a tally, which pages MORE.
-        self._drop_day: str               = date.today().isoformat()
-        self._drop_counts: dict[int, int] = {}
+        # device_id -> the times of its new outages in the last FLAP_WINDOW_DAYS,
+        # and device_id -> when the one "keeps dropping out" message was sent.
+        # Both persisted: the count runs over a week, so a restart must not lose it.
+        self._drops: dict[int, list[datetime]]   = {}
+        self._flap_noticed: dict[int, datetime] = {}
         self._restore_alerted()
         # Device ids whose alert we could not deliver — so a Pushover outage keeps
         # retrying instead of latching the device as "already alerted" (see _run_scan).
@@ -1292,12 +1315,19 @@ class Plugin(indigo.PluginBase):
         # How long a device must have been reported before the reminder repeats it
         # (2.15.0). A blank or rubbish value falls back to the default; a negative
         # one is treated as 0, which is "remind about everything".
-        self.reminder_min_age_hours    = max(_as_float(
-            values.get("reminderMinAgeHours", REMINDER_MIN_AGE_HOURS), REMINDER_MIN_AGE_HOURS), 0.0)
-        # Drops a device may have in one day before it is called flapping and its
-        # further drops stop being paged until tomorrow (2.15.0). 0 = no damping.
-        self.flap_limit_per_day        = max(_as_int(
-            values.get("flapLimitPerDay", FLAP_LIMIT_PER_DAY), FLAP_LIMIT_PER_DAY), 0)
+        min_age = _as_float(
+            values.get("reminderMinAgeHours", REMINDER_MIN_AGE_HOURS), REMINDER_MIN_AGE_HOURS)
+        if not math.isfinite(min_age):
+            # float() accepts "inf" and "nan". Infinity would switch the reminder
+            # off without a word, and nan would let every device through.
+            log(f"reminderMinAgeHours is not a usable number ({values.get('reminderMinAgeHours')!r}); "
+                f"using {REMINDER_MIN_AGE_HOURS}", level="WARNING")
+            min_age = float(REMINDER_MIN_AGE_HOURS)
+        self.reminder_min_age_hours    = max(min_age, 0.0)
+        # Drops a device may have in a week before it is called flapping and its
+        # further drops stop being sent (2.15.0). 0 = no damping.
+        self.flap_limit                = max(_as_int(
+            values.get("flapLimitPerWeek", FLAP_LIMIT), FLAP_LIMIT), 0)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1345,7 +1375,7 @@ class Plugin(indigo.PluginBase):
         pending   = []   # [(dev_id, name, reason)] offline and not yet notified
         recovered = []
         heard: dict[int, datetime | None] = {}   # pending dev_id -> last heard from
-        self._roll_drop_day(now)
+        self._prune_drops(now)
 
         disabled_now: dict[int, str] = {}   # watched, not excluded, disabled: id -> name
         for dev in indigo.devices:
@@ -1380,7 +1410,7 @@ class Plugin(indigo.PluginBase):
                     log(f"[OFFLINE] {dev.name}: {reason}", level="WARNING")
                     # A new outage, as against a retry of an alert that could not
                     # be delivered: counted once, for the flap damping.
-                    self._drop_counts[dev.id] = self._drop_counts.get(dev.id, 0) + 1
+                    self._note_drop(dev.id, now)
                 pending.append((dev.id, dev.name, reason))
                 heard[dev.id] = self._last_heard(dev, now)
             else:
@@ -1412,41 +1442,46 @@ class Plugin(indigo.PluginBase):
             # Pushover outage marked the device "already alerted", so the outage was
             # logged and never notified — the WaterLeakMonitor v1.8 bug class.
             #
-            # FLAP DAMPING (2.15.0), for every protocol. A device on its first
-            # drops of the day is paged as before. The drop AFTER the daily limit
-            # is paged once, saying how many times it has gone. Later drops that
-            # day are latched without a Pushover and written to the log, and the
-            # day rolling over reports any of them that is still offline (see
-            # _roll_drop_day), so the damping can delay a page but never lose one.
-            limit = self.flap_limit_per_day
+            # FLAP DAMPING (2.15.0), for every protocol. A device within its
+            # limit of drops for the week is sent as before. The drop that takes
+            # it OVER the limit is sent once, saying how many times it has gone.
+            # Later drops are latched without a Pushover and written to the log
+            # until the device has gone FLAP_QUIET_HOURS without one, and any of
+            # them that lasts FLAP_MUTE_MAX_HOURS is sent after all (see
+            # _send_stayed_offline), so the damping can delay a page by that long
+            # but never lose one.
+            limit = self.flap_limit
             page, silent = [], []
             for dev_id, name, reason in pending:
-                count = self._drop_counts.get(dev_id, 1)
-                if limit > 0 and count > limit + 1:
+                count = len(self._drops.get(dev_id, ())) or 1
+                if limit > 0 and count > limit and dev_id in self._flap_noticed:
                     silent.append((dev_id, name, count))
                 else:
-                    flap = count if (limit > 0 and count == limit + 1) else 0
+                    flap = count if (limit > 0 and count > limit) else 0
                     page.append((dev_id, name, reason, heard.get(dev_id), flap))
             for dev_id, name, count in silent:
                 self.alerted[dev_id] = now
-                self._muted[dev_id]  = now.date().isoformat()
+                self._muted[dev_id]  = now.isoformat()
                 self._undelivered.discard(dev_id)
                 if heard.get(dev_id) is not None:
                     self.last_heard[dev_id] = heard[dev_id]
-                log(f"[FLAPPING] {name}: offline for the {ordinal_word(count)} time today. "
-                    f"Not sent to Pushover (limit {limit} a day); it is reported "
-                    f"tomorrow if it is still offline then.", level="WARNING")
+                log(f"[FLAPPING] {name}: offline again, {count} times in the last "
+                    f"{FLAP_WINDOW_DAYS} days. Not sent to Pushover; it is sent if it "
+                    f"stays offline for {FLAP_MUTE_MAX_HOURS} hours.", level="WARNING")
             if page:
                 if self._alert_pushover([item[1:] for item in page]):
-                    for dev_id, _, _, last, _ in page:
+                    for dev_id, _, _, last, flap in page:
                         self.alerted[dev_id] = now
                         self._undelivered.discard(dev_id)
                         if last is not None:
                             self.last_heard[dev_id] = last
+                        if flap:
+                            self._flap_noticed[dev_id] = now
                 else:
                     for dev_id, _, _, _, _ in page:
                         self._undelivered.add(dev_id)
 
+        self._send_stayed_offline(now)
         self._persist_alerted()
         self._maybe_send_daily_reminder(now)
 
@@ -1454,33 +1489,73 @@ class Plugin(indigo.PluginBase):
             log(f"Scan complete — {len(pending)} new offline, {len(recovered)} recovered, "
                 f"{len(self.alerted)} total outstanding, {len(self._undelivered)} undelivered")
 
-    def _roll_drop_day(self, now):
-        """Start a new day's drop tally, and un-mute yesterday's muted devices.
+    def _prune_drops(self, now):
+        """Forget drops older than the flap window, and notices with none left."""
+        cutoff = now - timedelta(days=FLAP_WINDOW_DAYS)
+        self._drops = {dev_id: kept for dev_id, times in self._drops.items()
+                       if (kept := [t for t in times if t > cutoff])}
+        self._flap_noticed = {k: v for k, v in self._flap_noticed.items() if k in self._drops}
 
-        A device muted on an earlier day and still latched has been offline since
-        a drop nobody was paged about. Its latch is cleared here, before the scan
-        looks at it, so if it is still offline it is reported afresh in this very
-        scan and if it has recovered nothing is said. The day is read from the
-        stored mute, not from memory, so this also holds across a plugin restart.
+    def _note_drop(self, dev_id, now):
+        """Record one new outage for the flap damping.
+
+        A device that was told off for flapping and has since gone
+        FLAP_QUIET_HOURS without a drop has settled: its notice is forgotten, so
+        this drop is sent. If it is still over the limit for the week that one
+        message says so again, and the quiet starts over.
         """
-        today = now.date().isoformat()
-        if self._drop_day != today:
-            self._drop_day    = today
-            self._drop_counts = {}
-        for dev_id, day in list(self._muted.items()):
-            if dev_id not in self.alerted:
+        times = self._drops.setdefault(dev_id, [])
+        if dev_id in self._flap_noticed and (
+                not times or self._hours_since(times[-1], now) >= FLAP_QUIET_HOURS):
+            del self._flap_noticed[dev_id]
+        times.append(now)
+
+    def _send_stayed_offline(self, now):
+        """Send any drop that was held back as a flap and has not come back.
+
+        Called after the scan loop, so a device still in both `alerted` and
+        `_muted` was seen offline in this very scan (a recovery clears its latch
+        there). Without this a device that flapped and then died for good was
+        only ever a [FLAPPING] line in the log. The mute is dropped only when
+        the message is delivered, so a Pushover outage retries at every scan,
+        and it is persisted, so a restart cannot lose it either.
+        """
+        stayed = sorted((self.alerted[i], i) for i in self._muted
+                        if i in self.alerted
+                        and self._hours_since(self.alerted[i], now) >= FLAP_MUTE_MAX_HOURS)
+        lines, names, ids = [], [], []
+        for since, dev_id in stayed:
+            try:
+                name = indigo.devices[dev_id].name
+            except Exception:
+                continue            # deleted; the scan clears its latch
+            lines.append(f"{name} dropped out at {when_words(since, now)} and this time "
+                         f"it has not come back.")
+            names.append(name)
+            ids.append(dev_id)
+        if not lines:
+            return
+        if len(lines) == 1:
+            title = f"{names[0]} has stayed offline"
+        else:
+            title = f"{number_word(len(lines)).capitalize()} devices have stayed offline"
+        if self._send_pushover(title, cap_body(lines), priority="0"):
+            for dev_id in ids:
                 del self._muted[dev_id]
-            elif day != today:
-                del self._muted[dev_id]
-                del self.alerted[dev_id]
-                log(f"Device {self._device_label(dev_id)} was not paged for its last "
-                    f"drop on {day} (flapping); checking it afresh today")
+            log(f"Pushover alert sent: {len(lines)} flapping device(s) stayed offline")
+            self._persist_alerted()
+        else:
+            log(f"NOT DELIVERED - {len(lines)} flapping device(s) stayed offline, "
+                f"retrying next scan", level="ERROR")
 
     def _last_heard(self, dev, now=None):
         """When this device last genuinely spoke, or None where nothing honest says.
 
         Z2M and ESPHome keep their own lastSeen state. Ecowitt keeps the time of
-        its last reading. Z-Wave's lastSuccessfulComm is only moved by a reply.
+        its last reading. A BATTERY Z-Wave node reports on its wake-up cadence, so
+        its lastSuccessfulComm is a fair clock; a MAINS node's is not (it only
+        tracks when the node was last used, and healthy ones read thousands of
+        hours stale, see _check_zwave), so a mains node gives None.
         Shelly and RAMSES give None ON PURPOSE: their plugins write a state when
         the device goes away, and Indigo refreshes lastSuccessfulComm on any state
         write, so that clock reads "a moment ago" on a device that has just died
@@ -1498,7 +1573,8 @@ class Plugin(indigo.PluginBase):
                 age  = ecowitt_feed_age_hours(states, now)
                 last = None if age is None else now - timedelta(hours=age)
             elif protocol == "zwave":
-                last = dev.lastSuccessfulComm
+                battery = getattr(dev, "batteryLevel", None)
+                last    = dev.lastSuccessfulComm if battery is not None else None
             else:
                 last = None
             if not isinstance(last, datetime) or last > now:
@@ -2453,15 +2529,23 @@ class Plugin(indigo.PluginBase):
             flap = item[3] if len(item) > 3 else 0
             plain, short = plain_of(reason)
             if flap:
-                text = (f"{name} {plain}, for the {ordinal_word(flap)} time today. It came "
-                        f"back each time before, so no more alerts about it will be "
-                        f"sent until tomorrow.")
+                # A fixed sentence, not the reason: "has not been heard from for 37
+                # minutes, and ..., for the fourth time" was true and unreadable.
+                window = ("week" if FLAP_WINDOW_DAYS == 7
+                          else f"{number_word(FLAP_WINDOW_DAYS)} days")
+                text = (f"{name} has dropped out {number_word(flap)} times in the last "
+                        f"{window}. It came back each time before, so its later drops "
+                        f"will not be sent until it has gone "
+                        f"{_counted(FLAP_QUIET_HOURS // 24, 'day')} without one. You will "
+                        f"be told if it stays offline for "
+                        f"{_counted(FLAP_MUTE_MAX_HOURS, 'hour')}.")
                 titles.append(f"{name} keeps dropping out")
             else:
                 text = f"{name} {plain}."
                 titles.append(f"{name} {short}")
             # Not after a reason that already gives the length of the silence.
-            if last is not None and "never" not in plain and " for " not in plain:
+            if (not flap and last is not None and "never" not in plain
+                    and " for " not in plain):
                 text += f" It was last heard from at {when_words(last, now)}."
             sentences.append(text)
         if len(sentences) == 1:
@@ -2895,6 +2979,11 @@ class Plugin(indigo.PluginBase):
                 {str(k): v.isoformat() for k, v in self.last_heard.items()})
             self.pluginPrefs["muted_json"] = json.dumps(
                 {str(k): v for k, v in self._muted.items()})
+            # Not pruned to the latch: the week's drops outlive each outage.
+            self.pluginPrefs["drops_json"] = json.dumps(
+                {str(k): [t.isoformat() for t in v] for k, v in self._drops.items()})
+            self.pluginPrefs["flap_noticed_json"] = json.dumps(
+                {str(k): v.isoformat() for k, v in self._flap_noticed.items()})
             indigo.server.savePluginPrefs()
         except Exception as e:
             log(f"Failed to persist alert state: {e}", level="ERROR")
@@ -2925,6 +3014,19 @@ class Plugin(indigo.PluginBase):
         except Exception as e:
             log(f"Could not restore the flap mutes: {e}", level="WARNING")
             self._muted = {}
+        try:
+            data = json.loads(self.pluginPrefs.get("drops_json", "{}") or "{}")
+            self._drops = {int(k): sorted(datetime.fromisoformat(t) for t in v)
+                           for k, v in data.items()}
+        except Exception as e:
+            log(f"Could not restore the week's drop counts: {e}", level="WARNING")
+            self._drops = {}
+        try:
+            data = json.loads(self.pluginPrefs.get("flap_noticed_json", "{}") or "{}")
+            self._flap_noticed = {int(k): datetime.fromisoformat(v) for k, v in data.items()}
+        except Exception as e:
+            log(f"Could not restore the flap notices: {e}", level="WARNING")
+            self._flap_noticed = {}
 
     # ------------------------------------------------------------------
     # Helpers

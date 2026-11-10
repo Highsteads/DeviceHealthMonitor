@@ -49,7 +49,7 @@ The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through
 
 ## What's new
 
-**v2.15.0** — Messages are in plain English with the device named in the title, such as "Twigs Plug has stopped answering". A device that keeps dropping out sends one message saying so after three drops in a day, then stays quiet until tomorrow. The daily reminder says when each device was last heard from, and waits until a device has been offline for 12 hours.
+**v2.15.0** — Messages are in plain English with the device named in the title, such as "Twigs Plug has stopped answering". A device that keeps dropping out sends one message saying so once it has gone more than three times in a week, then stays quiet until it has settled for two days, and a drop that lasts three hours is always sent. The daily reminder says when each device was last heard from, and waits until a device has been offline for 12 hours.
 
 **v2.14.2** — The time a Zigbee or ESPHome device was last seen is read in every format they use, and if one still cannot be read the Event Log says so, rather than that device's "not seen for" check quietly stopping.
 

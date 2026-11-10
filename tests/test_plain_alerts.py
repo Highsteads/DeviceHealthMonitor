@@ -3,7 +3,8 @@
 # Filename:    test_plain_alerts.py
 # Description: 2.15.0. What reaches the phone is plain English: no raw state text,
 #              the device named in the title, a flapping device said so once and
-#              then left alone until tomorrow, and a reminder that gives when the
+#              then left alone (over a rolling week, with a drop that lasts three
+#              hours always sent), and a reminder that gives when the
 #              device was LAST HEARD FROM and does not follow the first alert
 #              within the hour.
 # Author:      CliveS & Claude Fable 5.2
@@ -57,7 +58,10 @@ def assert_plain(text):
     (1 / 60, "a minute"),
     (37 / 60, "37 minutes"),
     (1.0, "about an hour"),
+    (1.5, "over an hour"),
     (2.4, "over two hours"),
+    (2.5, "over two hours"),
+    (60, "over two days"),
     (11.8, "nearly twelve hours"),
     (20, "about 20 hours"),
     (57, "over two days"),
@@ -202,6 +206,27 @@ def drop_and_recover(plugin_mod, plugin, down, up, recover=True):
         plugin._run_scan()
 
 
+@pytest.fixture
+def clock(plugin_mod, monkeypatch):
+    """A movable 'now' for the plugin. Only for devices whose check is not an
+    age (the Shelly here): a FakeDevice's comm time is fixed when it is built."""
+    real = datetime
+
+    class Clock(datetime):
+        offset = timedelta(0)
+
+        @classmethod
+        def now(cls, tz=None):
+            return real.now() + cls.offset
+
+        @classmethod
+        def forward(cls, **kw):
+            cls.offset += timedelta(**kw)
+
+    monkeypatch.setattr(plugin_mod, "datetime", Clock)
+    return Clock
+
+
 @pytest.mark.parametrize("kind", ["shelly", "zwave", "esphome", "z2m"])
 def test_a_flapping_device_is_said_once_then_left_alone(plugin_mod, plugin, pushover, kind):
     down, up = flap_pair(kind)
@@ -213,42 +238,70 @@ def test_a_flapping_device_is_said_once_then_left_alone(plugin_mod, plugin, push
     drop_and_recover(plugin_mod, plugin, down, up)
     fourth = sent(pushover)[3]
     assert fourth["msgTitle"] == "Twigs Plug keeps dropping out"
-    assert "for the fourth time today" in fourth["msgBody"]
-    assert "until tomorrow" in fourth["msgBody"]
+    assert fourth["msgBody"] == (
+        "Twigs Plug has dropped out four times in the last week. It came back each time "
+        "before, so its later drops will not be sent until it has gone two days without "
+        "one. You will be told if it stays offline for three hours.")
     assert_plain(fourth["msgBody"])
 
     for _ in range(4):
         drop_and_recover(plugin_mod, plugin, down, up)
-    assert len(sent(pushover)) == 4, "later drops that day must not page"
+    assert len(sent(pushover)) == 4, "later drops must not page"
     flapping = [m for m in plugin_mod.indigo.server.messages_at(30) if "[FLAPPING] Twigs Plug" in m]
     assert len(flapping) == 4, "each unpaged drop is still in the log"
 
 
-def test_a_muted_drop_is_latched_and_reported_the_next_day(plugin_mod, plugin, pushover,
-                                                           monkeypatch):
+def test_one_drop_a_day_is_still_flapping(plugin_mod, plugin, pushover, clock):
+    """The measured pattern (27-10 to 10-11-2026): once or twice a day, for days.
+    A tally that reset at midnight never reached its limit and sent 70 of 76."""
+    down, up = flap_pair("shelly")
+    for _ in range(6):
+        drop_and_recover(plugin_mod, plugin, down, up)
+        clock.forward(hours=24)
+    titles = [m["msgTitle"] for m in sent(pushover)]
+    assert titles == ["Twigs Plug has stopped answering"] * 3 + ["Twigs Plug keeps dropping out"]
+
+
+def test_drops_older_than_a_week_do_not_count(plugin_mod, plugin, pushover, clock):
+    down, up = flap_pair("shelly")
+    for _ in range(3):
+        drop_and_recover(plugin_mod, plugin, down, up)
+    clock.forward(days=7, minutes=5)
+    drop_and_recover(plugin_mod, plugin, down, up)
+    assert [m["msgTitle"] for m in sent(pushover)] == ["Twigs Plug has stopped answering"] * 4
+    assert len(plugin._drops[1]) == 1
+
+
+def test_a_held_back_drop_that_lasts_is_sent(plugin_mod, plugin, pushover, clock):
+    """Flaps four times, then dies for good: that must reach the phone today."""
     down, up = flap_pair("shelly")
     for _ in range(4):
         drop_and_recover(plugin_mod, plugin, down, up)
     drop_and_recover(plugin_mod, plugin, down, up, recover=False)     # fifth: stays off
     assert len(sent(pushover)) == 4
     assert 1 in plugin.alerted and 1 in plugin._muted
+    latched = plugin.alerted[1]
 
-    real = datetime
-
-    class Tomorrow(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return real.now() + timedelta(days=1)
-
-    monkeypatch.setattr(plugin_mod, "datetime", Tomorrow)
+    clock.forward(hours=2, minutes=50)
     plugin._run_scan()
-    assert len(sent(pushover)) == 5, "still offline the next day: it must be paged"
-    assert sent(pushover)[4]["msgTitle"] == "Twigs Plug has stopped answering"
-    assert 1 in plugin.alerted and 1 not in plugin._muted
+    assert len(sent(pushover)) == 4, "not yet three hours"
+
+    clock.forward(minutes=20)
+    plugin._run_scan()
+    fifth = sent(pushover)[4]
+    assert fifth["msgTitle"] == "Twigs Plug has stayed offline"
+    assert fifth["msgBody"].startswith("Twigs Plug dropped out at ")
+    assert fifth["msgBody"].endswith(" and this time it has not come back.")
+    assert_plain(fifth["msgBody"])
+    assert plugin.alerted[1] == latched and 1 not in plugin._muted
+
+    clock.forward(hours=5)
+    plugin._run_scan()
+    assert len(sent(pushover)) == 5, "said once"
 
 
-def test_a_mute_survives_a_restart(plugin_mod, plugin, pushover, monkeypatch):
-    """A restart must not turn 'not paged today' into 'never paged'."""
+def test_a_held_back_drop_survives_a_restart(plugin_mod, plugin, pushover, clock):
+    """A restart must not turn 'not sent yet' into 'never sent'."""
     down, up = flap_pair("shelly")
     for _ in range(4):
         drop_and_recover(plugin_mod, plugin, down, up)
@@ -256,30 +309,81 @@ def test_a_mute_survives_a_restart(plugin_mod, plugin, pushover, monkeypatch):
     again = plugin_mod.Plugin(plugin.pluginId, "Device Health Monitor", "2.15.0",
                               plugin.pluginPrefs)
     assert again._muted == plugin._muted and 1 in again._muted
-
-    real = datetime
-
-    class Tomorrow(datetime):
-        @classmethod
-        def now(cls, tz=None):
-            return real.now() + timedelta(days=1)
-
-    monkeypatch.setattr(plugin_mod, "datetime", Tomorrow)
+    assert again._drops == plugin._drops and again._flap_noticed == plugin._flap_noticed
+    clock.forward(hours=3, minutes=5)
     again._run_scan()
-    assert len(sent(pushover)) == 5
+    assert sent(pushover)[4]["msgTitle"] == "Twigs Plug has stayed offline"
 
 
-def test_a_muted_device_that_recovers_says_nothing_next_day(plugin_mod, plugin, pushover,
-                                                            monkeypatch):
+def test_a_stayed_offline_message_that_fails_is_tried_again(plugin_mod, plugin, pushover, clock):
     down, up = flap_pair("shelly")
     for _ in range(4):
         drop_and_recover(plugin_mod, plugin, down, up)
-    drop_and_recover(plugin_mod, plugin, down, up)                    # fifth, recovers
+    drop_and_recover(plugin_mod, plugin, down, up, recover=False)
+    clock.forward(hours=4)
+    pushover.raises = True
+    plugin._run_scan()
+    assert 1 in plugin._muted, "not delivered, so still owed"
+    pushover.raises = False
+    plugin._run_scan()
+    assert sent(pushover)[-1]["msgTitle"] == "Twigs Plug has stayed offline"
+    assert 1 not in plugin._muted
+
+
+def test_a_held_back_drop_that_recovers_says_nothing(plugin_mod, plugin, pushover, clock):
+    down, up = flap_pair("shelly")
+    for _ in range(5):
+        drop_and_recover(plugin_mod, plugin, down, up)
     assert plugin._muted == {} and plugin.alerted == {}
+    clock.forward(hours=4)
+    plugin._run_scan()
+    assert len(sent(pushover)) == 4
+
+
+def test_two_quiet_days_end_the_silence(plugin_mod, plugin, pushover, clock):
+    down, up = flap_pair("shelly")
+    for _ in range(5):
+        drop_and_recover(plugin_mod, plugin, down, up)
+    assert len(sent(pushover)) == 4
+    clock.forward(hours=47)
+    drop_and_recover(plugin_mod, plugin, down, up)
+    assert len(sent(pushover)) == 4, "47 hours is not yet two days"
+    clock.forward(hours=49)
+    drop_and_recover(plugin_mod, plugin, down, up)
+    last = sent(pushover)[4]
+    assert last["msgTitle"] == "Twigs Plug keeps dropping out"
+    assert "seven times in the last week" in last["msgBody"]
+    drop_and_recover(plugin_mod, plugin, down, up)
+    assert len(sent(pushover)) == 5, "and the quiet starts over"
+
+
+def test_the_weeks_count_survives_a_restart(plugin_mod, plugin, pushover):
+    down, up = flap_pair("shelly")
+    for _ in range(3):
+        drop_and_recover(plugin_mod, plugin, down, up)
+    again = plugin_mod.Plugin(plugin.pluginId, "Device Health Monitor", "2.15.0",
+                              plugin.pluginPrefs)
+    drop_and_recover(plugin_mod, again, down, up)
+    assert sent(pushover)[3]["msgTitle"] == "Twigs Plug keeps dropping out"
+
+
+def test_a_flap_notice_that_fails_is_not_counted_as_said(plugin_mod, plugin, pushover):
+    down, up = flap_pair("shelly")
+    for _ in range(3):
+        drop_and_recover(plugin_mod, plugin, down, up)
+    pushover.raises = True
+    plugin_mod.indigo.devices[1] = down
+    for _ in range(3):
+        plugin._run_scan()
+    assert 1 not in plugin._flap_noticed and 1 not in plugin.alerted
+    pushover.raises = False
+    plugin._run_scan()
+    assert sent(pushover)[-1]["msgTitle"] == "Twigs Plug keeps dropping out"
+    assert "four times" in sent(pushover)[-1]["msgBody"], "retries are not drops"
 
 
 def test_the_flap_limit_can_be_switched_off(plugin_mod, plugin, pushover):
-    plugin._apply_prefs({"flapLimitPerDay": "0"})
+    plugin._apply_prefs({"flapLimitPerWeek": "0"})
     down, up = flap_pair("shelly")
     for _ in range(6):
         drop_and_recover(plugin_mod, plugin, down, up)
@@ -297,12 +401,13 @@ def test_an_undelivered_alert_is_one_drop_not_many(plugin_mod, plugin, pushover)
     plugin._run_scan()
     (msg,) = sent(pushover)
     assert msg["msgTitle"] == "Twigs Plug has stopped answering"
+    assert len(plugin._drops[1]) == 1
 
 
 @pytest.mark.parametrize("raw, want", [("", 3), ("rubbish", 3), (None, 3), ("5", 5), ("-2", 0)])
 def test_the_flap_limit_setting_is_guarded(plugin, raw, want):
-    plugin._apply_prefs({"flapLimitPerDay": raw})
-    assert plugin.flap_limit_per_day == want
+    plugin._apply_prefs({"flapLimitPerWeek": raw})
+    assert plugin.flap_limit == want
 
 
 # --------------------------------------------------------------------------
@@ -363,10 +468,37 @@ def test_no_reminder_an_hour_after_the_first_alert(plugin_mod, plugin, pushover)
 
 
 @pytest.mark.parametrize("raw, want", [("", 12), ("rubbish", 12), (None, 12), ("2.5", 2.5),
-                                       ("-4", 0)])
+                                       ("-4", 0), ("inf", 12), ("1e999", 12), ("nan", 12)])
 def test_the_reminder_age_setting_is_guarded(plugin, raw, want):
     plugin._apply_prefs({"reminderMinAgeHours": raw})
     assert plugin.reminder_min_age_hours == want
+
+
+def test_an_endless_reminder_age_is_said_in_the_log(plugin_mod, plugin):
+    plugin._apply_prefs({"reminderMinAgeHours": "inf"})
+    assert any("reminderMinAgeHours" in m for m in plugin_mod.indigo.server.messages_at(30))
+
+
+def test_a_mains_zwave_node_has_no_last_heard(plugin_mod, plugin, pushover):
+    """Its lastSuccessfulComm is when it was last USED: healthy mains nodes read
+    thousands of hours stale, so 'last heard from 3 October' would be false."""
+    plugin_mod.indigo.devices[4] = FakeDevice(4, "Loft Repeater", ZWAVE, error_state="no ack",
+                                              hours_since_comm=3000)
+    plugin._run_scan()
+    (msg,) = sent(pushover)
+    assert msg["msgBody"] == "Loft Repeater is not answering the Z-Wave controller."
+    assert 4 in plugin.alerted and 4 not in plugin.last_heard
+    plugin._apply_prefs({"reminderMinAgeHours": "0"})
+    plugin._maybe_send_daily_reminder(datetime.now().replace(hour=23, minute=59))
+    (again,) = reminders(pushover)
+    assert "heard" not in again["msgBody"] and "was found offline at" in again["msgBody"]
+
+
+def test_a_battery_zwave_node_keeps_its_last_heard(plugin_mod, plugin, pushover):
+    plugin_mod.indigo.devices[5] = FakeDevice(5, "Door Sensor", ZWAVE, battery=80,
+                                              hours_since_comm=30)
+    plugin._run_scan()
+    assert 5 in plugin.alerted and 5 in plugin.last_heard
 
 
 def test_the_scan_stores_last_heard_with_the_latch(plugin_mod, plugin, pushover, prefs):
@@ -408,7 +540,8 @@ def test_the_new_settings_are_in_the_configure_dialog():
     root = ET.parse(os.path.join(SERVER_PLUGIN, "PluginConfig.xml")).getroot()
     fields = {f.get("id"): f for f in root.iter("Field")}
     assert fields["reminderMinAgeHours"].get("defaultValue") == "12"
-    assert fields["flapLimitPerDay"].get("defaultValue") == "3"
+    assert fields["flapLimitPerWeek"].get("defaultValue") == "3"
+    assert "flapLimitPerDay" not in fields
 
 
 def test_a_long_alert_is_cut_on_a_whole_line(plugin_mod, plugin, pushover):

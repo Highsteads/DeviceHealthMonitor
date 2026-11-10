@@ -45,7 +45,7 @@ Open these with **Plugins → Device Health Monitor → Configure**. A change ta
 
 | Setting | What it does |
 |---|---|
-| **Drops in a day before alerts stop** | How many times a device may drop out and come back in one day and still send a message each time. The next drop sends one message saying how many times it has gone, and later drops that day go in the Event Log only. A device still offline the next day is reported again. It starts at 3. Set it to 0 to send a message for every drop. |
+| **Drops in a week before alerts stop** | How many times a device may drop out and come back in seven days and still send a message each time. The next drop sends one message saying how many times it has gone, and later drops go in the Event Log only until the device has gone two days without one. A drop that lasts three hours is always sent. It starts at 3. Set it to 0 to send a message for every drop. |
 
 ## Plugin watchdog
 
