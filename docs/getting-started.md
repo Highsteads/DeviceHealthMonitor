@@ -40,7 +40,7 @@ The first time it runs it also writes two files into a folder called `Indigo/Dev
 The first check runs 30 seconds after the plugin starts. To run one straight away, choose **Plugins → Device Health Monitor → Scan Devices Now**.
 
 - If every device is well, the check writes nothing at all.
-- If a device has gone quiet, the Event Log has a line starting **[OFFLINE]** with its name and the reason, and a Pushover message arrives headed **Device Health: 1 offline**, with the device and the reason underneath.
+- If a device has gone quiet, the Event Log has a line starting **[OFFLINE]** with its name and the reason, and a Pushover message arrives headed with the device's name and what is wrong, such as **Kitchen Sensor has gone quiet**.
 
 The first check in a house that has never been watched often finds a few devices that died long ago. Choose **Plugins → Device Health Monitor → Show Offline/Stale Devices** to list them, and the [Quiet, away and left-out devices](quiet-and-excluded.md) page explains what to do about any that are quiet on purpose.
 

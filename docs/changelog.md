@@ -5,6 +5,14 @@ nav_order: 10
 
 # Version history
 
+## 2.15.0 — 10 November 2026
+
+- **Messages are in plain English, and one device is named in the title.** A message used to be headed **Device Health: 1 offline** with the plugin's own shorthand underneath. It now reads, for example, **Twigs Plug has stopped answering**, and the message says what is wrong in a sentence. The shorthand is still in the Event Log's **[OFFLINE]** line.
+- **A device that keeps dropping out stops sending a message for every drop.** After three drops in one day, the next drop sends one message, **Twigs Plug keeps dropping out**, saying how many times it has gone. Later drops that day go in the Event Log only. If the device is still offline the next day it is reported again. This applies to every kind of device. Change the number, or set it to 0 to switch this off, under **Devices that keep dropping out** in the Configure dialog.
+- **The daily reminder says when a device was last heard from.** It used to give the moment the plugin decided the device was offline, which for a silent sensor can be a day after it stopped. It now reads, for example, "has not been heard from since 11:41am on Saturday, nearly three days ago". For Shelly devices and heating zones, which keep no record of when they last spoke, it says when the device was found offline.
+- **The daily reminder no longer follows the first alert within the hour.** A device is left out of the reminder until it has been offline for 12 hours. Change this under **Daily reminder** in the Configure dialog.
+- **A long message is cut at the end of a line.** If more devices are offline than one Pushover message can hold, the last line says how many more are in the Event Log.
+
 ## 2.14.2 — 1 November 2026
 
 - **A "last seen" time in an unexpected format no longer switches a check off in silence.** Zigbee and ESPHome devices are judged on when they were last seen, and only two exact ways of writing that time were understood. A time with fractions of a second, a time zone, or written as a plain number could not be read, and then the "not seen for" check and any away tolerance stopped working for that device with nothing in the log. All of those are now read. If a value still cannot be read, the Event Log gives a warning for that device, once.

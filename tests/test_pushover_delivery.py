@@ -66,7 +66,7 @@ def test_reminder_lists_devices_still_offline(plugin_mod, plugin, pushover):
     plugin._maybe_send_daily_reminder(NINE)
     got = reminders(pushover)
     assert len(got) == 1
-    assert "Dead Sensor" in got[0]["msgBody"] and "20h" in got[0]["msgBody"]
+    assert "Dead Sensor" in got[0]["msgBody"] and "about 20 hours ago" in got[0]["msgBody"]
 
 
 def test_reminder_is_sent_once_a_day(plugin_mod, plugin, pushover):

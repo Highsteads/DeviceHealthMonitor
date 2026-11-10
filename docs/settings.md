@@ -39,6 +39,13 @@ Open these with **Plugins → Device Health Monitor → Configure**. A change ta
 |---|---|
 | **Send a daily reminder of devices still offline** | Once a day, one Pushover message lists every device that is still offline. It is there because the Pushover plugin does not tell this plugin when Pushover refuses a message, so a lost alert reaches you within a day. Nothing is sent on a day when every device is healthy. It starts ticked. |
 | **Reminder hour (0-23)** | The reminder goes at the first check at or after this hour. It starts at 9. |
+| **Only remind after this many hours** | A device is left out of the reminder until it has been offline this long, so a device first reported shortly before the reminder is not sent twice. It starts at 12. Set it to 0 to include every device. |
+
+## Devices that keep dropping out
+
+| Setting | What it does |
+|---|---|
+| **Drops in a day before alerts stop** | How many times a device may drop out and come back in one day and still send a message each time. The next drop sends one message saying how many times it has gone, and later drops that day go in the Event Log only. A device still offline the next day is reported again. It starts at 3. Set it to 0 to send a message for every drop. |
 
 ## Plugin watchdog
 

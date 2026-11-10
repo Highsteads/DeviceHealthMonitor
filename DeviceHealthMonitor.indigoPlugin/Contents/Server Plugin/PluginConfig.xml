@@ -77,8 +77,22 @@
     <Field id="dailyReminderHour" type="textfield" defaultValue="9" visibleBindingId="dailyReminder" visibleBindingValue="true">
         <Label>Reminder hour (0-23)</Label>
     </Field>
+    <Field id="reminderMinAgeHours" type="textfield" defaultValue="12" visibleBindingId="dailyReminder" visibleBindingValue="true">
+        <Label>Only remind after this many hours</Label>
+    </Field>
     <Field id="label_reminder_info" type="label">
-        <Label>The Pushover plugin does not tell this plugin when Pushover refuses a message, so an alert can be lost without anyone knowing. Once a day, at the first check after this hour, one message lists every device that is still offline. A lost alert therefore reaches you within a day. Nothing is sent on a day when every device is healthy.</Label>
+        <Label>The Pushover plugin does not tell this plugin when Pushover refuses a message, so an alert can be lost without anyone knowing. Once a day, at the first check after this hour, one message lists every device that is still offline. A lost alert therefore reaches you within a day or so. A device is left out until it has been offline for the number of hours above, so one reported shortly before the reminder is not sent twice. Nothing is sent on a day when every device is healthy.</Label>
+    </Field>
+
+    <Field id="sep_flap" type="separator"/>
+    <Field id="label_flap" type="label">
+        <Label>Devices that keep dropping out</Label>
+    </Field>
+    <Field id="flapLimitPerDay" type="textfield" defaultValue="3">
+        <Label>Drops in a day before alerts stop</Label>
+    </Field>
+    <Field id="label_flap_info" type="label">
+        <Label>A device that drops out and comes back over and over would otherwise send a message for every drop. After this many drops in one day, the next drop sends one message saying how many times it has gone, and later drops that day are written to the Event Log only. If it is still offline the next day it is reported again. Set to 0 to send a message for every drop.</Label>
     </Field>
 
     <Field id="sep_watchdog" type="separator"/>

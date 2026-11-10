@@ -98,7 +98,11 @@ class TestItReachesThePhone:
         assert len(pushover.sent) == 1
         body = str(pushover.sent[0])
         assert "En Suite Radiator" in body
-        assert "valve silent" in body
+        # 2.15.0: the raw "valve silent" stays in the Event Log; the phone gets a sentence.
+        assert "valve that has gone quiet" in body
+        assert "errorState" not in body
+        assert any("[OFFLINE] En Suite Radiator: errorState='valve silent'" in m
+                   for m, _ in plugin_mod.indigo.server.lines)
 
     def test_a_healthy_zone_produces_nothing(self, plugin_mod, plugin, pushover):
         plugin_mod.indigo.devices[1] = zone(1, "Bathroom Radiator")

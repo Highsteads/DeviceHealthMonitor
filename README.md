@@ -2,7 +2,7 @@
 
 **Tells your phone when a device in Indigo stops answering, and restarts a plugin that has stopped working.**
 
-**Version:** 2.14.2 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
+**Version:** 2.15.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
 
 **[Read the full guide](https://highsteads.github.io/DeviceHealthMonitor/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -48,6 +48,8 @@ The plugin watchdog works with almost any plugin that runs devices.
 The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v2.15.0** — Messages are in plain English with the device named in the title, such as "Twigs Plug has stopped answering". A device that keeps dropping out sends one message saying so after three drops in a day, then stays quiet until tomorrow. The daily reminder says when each device was last heard from, and waits until a device has been offline for 12 hours.
 
 **v2.14.2** — The time a Zigbee or ESPHome device was last seen is read in every format they use, and if one still cannot be read the Event Log says so, rather than that device's "not seen for" check quietly stopping.
 

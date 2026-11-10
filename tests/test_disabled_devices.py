@@ -41,7 +41,8 @@ def test_re_enabled_still_dead_is_reported_again(plugin_mod, indigo_mod, plugin,
     plugin._run_scan()
     indigo_mod.devices[1].enabled = True
     plugin._run_scan()
-    offline = [p for _, p in pushover.sent if "offline" in p["msgTitle"]]
+    # 2.15.0 names the device in the title and says what is wrong in plain words.
+    offline = [p for _, p in pushover.sent if p["msgTitle"] == "Dead Sensor has gone quiet"]
     assert len(offline) == 2
 
 

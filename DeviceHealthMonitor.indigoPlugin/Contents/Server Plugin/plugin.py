@@ -4,9 +4,26 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Opus 5.5
-# Date:        01-11-2026
-# Version:     2.14.2
+# Author:      CliveS & Claude Fable 5.2
+# Date:        10-11-2026
+# Version:     2.15.0
+#
+# v2.15.0 (10-11-2026): THE PHONE GETS PLAIN ENGLISH, AND A FLAPPING DEVICE STOPS
+# PAGING. From the 10-11-2026 audit of every message the server sends: 80 Device
+# Health Pushovers in 14 days, 57 of them Shelly plugs dropping and returning, each
+# with a body like "- Twigs Plug (deviceOnline=False)". (1) Every check hands back
+# a Reason: the raw text for the [OFFLINE] log line, and a plain sentence for the
+# message. One device is named in the title ("Twigs Plug has stopped answering").
+# (2) Flap damping for every protocol: after flapLimitPerDay drops in a day
+# (default 3) the next drop is sent once, saying how many, and later drops that day
+# are logged and latched without a Pushover; one still offline the next day is
+# reported afresh, and the mute is persisted so a restart cannot lose it. (3) The
+# time a device was LAST HEARD FROM is stored with the latch where an honest clock
+# exists (z2m, ESPHome, Ecowitt, Z-Wave) and the daily reminder gives that, in
+# words, rather than the moment a threshold tripped. (4) The reminder leaves a
+# device out until it has been reported for reminderMinAgeHours (default 12, was a
+# fixed 1), so it no longer follows the first alert within the hour. Bodies are
+# capped at 1024 characters on whole lines. No detection threshold changed.
 #
 # v2.14.2 (01-11-2026): AN UNREADABLE lastSeen NO LONGER SWITCHES A CHECK OFF IN
 # SILENCE. Only two exact formats were read, so a lastSeen carrying fractions of a
@@ -357,12 +374,163 @@ def monitored_protocols_label():
 PUSHOVER_PLUGIN_ID = "io.thechad.indigoplugin.pushover"
 
 # A device must have been latched offline at least this long to be in the daily
-# reminder, so a device first reported minutes before the reminder is not sent twice.
-REMINDER_MIN_AGE_HOURS = 1
+# reminder, so a device first reported shortly before the reminder is not sent twice.
+# It was 1 until 2.15.0, and with the reminder at 9am anything that failed between
+# 8am and 9am was paged twice inside the hour (HP Printer Power Plug, 07-11-2026:
+# 08:48 then 09:48). The default for the reminderMinAgeHours setting.
+REMINDER_MIN_AGE_HOURS = 12
+
+# A device that has dropped out and come back this many times in one day is
+# flapping. Its next drop is reported once, saying so, and the drops after that are
+# not sent to the phone until tomorrow. The default for the flapLimitPerDay setting;
+# 0 switches the damping off.
+FLAP_LIMIT_PER_DAY = 3
+
+# Pushover cuts a body above this without saying so.
+PUSHOVER_BODY_LIMIT = 1024
+
+
+# ---------------------------------------------------------------------------
+# Plain English for the phone (2.15.0)
+# ---------------------------------------------------------------------------
+# The raw reason ("errorState='unreachable'", "availability=offline, and not seen
+# for 37 min (grace 30 min)") is the right thing for the Event Log and the wrong
+# thing for a Pushover. Each check now hands back BOTH, on one object, so the two
+# cannot drift and nothing has to guess a sentence from the raw text afterwards.
+
+class Reason(str):
+    """A raw reason for the log, carrying its plain-English form for a message.
+
+    It IS the raw string, so every caller and test that compares or formats a
+    reason keeps working. `plain` is a verb phrase that follows the device name
+    ("has stopped answering"); `title` is the short form for a message title.
+    """
+
+    def __new__(cls, raw, plain="", title=""):
+        obj       = super().__new__(cls, raw)
+        obj.plain = plain or "has stopped answering"
+        obj.title = title or "has stopped answering"
+        return obj
+
+    def also(self, raw_suffix, plain_suffix=""):
+        """The same reason with more raw text, and optionally more plain text."""
+        return Reason(f"{self}{raw_suffix}", f"{self.plain}{plain_suffix}", self.title)
+
+
+def plain_of(reason):
+    """(plain, title) for any reason, including a bare string from older code."""
+    return (getattr(reason, "plain", "") or "has stopped answering",
+            getattr(reason, "title", "") or "has stopped answering")
+
+
+_NUMBER_WORDS = ("no", "one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine", "ten", "eleven", "twelve")
+_ORDINAL_WORDS = ("", "first", "second", "third", "fourth", "fifth", "sixth",
+                  "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth")
+
+
+def number_word(n):
+    """Small whole numbers as a person says them: 'four', not '4'."""
+    n = int(n)
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def ordinal_word(n):
+    n = int(n)
+    if 1 <= n < len(_ORDINAL_WORDS):
+        return _ORDINAL_WORDS[n]
+    if 10 <= n % 100 <= 20:
+        return f"{n}th"
+    return f"{n}{ {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th') }"
+
+
+def _counted(n, unit):
+    if n == 1:
+        return f"{'an' if unit == 'hour' else 'a'} {unit}"
+    return f"{number_word(n)} {unit}s"
+
+
+def span_words(hours):
+    """A length of time in words: '37 minutes', 'over two hours', 'nearly three days'."""
+    try:
+        hours = max(float(hours), 0.0)
+    except (TypeError, ValueError):
+        return "some time"
+    minutes = hours * 60.0
+    if minutes < 1:
+        return "less than a minute"
+    if minutes < 59.5:
+        return _counted(int(minutes + 0.5), "minute")
+    value, unit = (hours, "hour") if hours < 47.5 else (hours / 24.0, "day")
+    n    = max(int(value + 0.5), 1)
+    diff = value - n
+    lead = "nearly" if diff <= -0.1 else ("over" if diff >= 0.1 else "about")
+    return f"{lead} {_counted(n, unit)}"
+
+
+def clock_words(when):
+    """A time of day as a person says it: '4pm', '11:41am'."""
+    hour = when.hour % 12 or 12
+    tail = "am" if when.hour < 12 else "pm"
+    return f"{hour}{tail}" if when.minute == 0 else f"{hour}:{when.minute:02d}{tail}"
+
+
+def when_words(when, now):
+    """A moment in words: '11:41am today', '4pm yesterday', '11:41am on Saturday'."""
+    days = (now.date() - when.date()).days
+    if days == 0:
+        return f"{clock_words(when)} today"
+    if days == 1:
+        return f"{clock_words(when)} yesterday"
+    if 1 < days < 7:
+        return f"{clock_words(when)} on {when.strftime('%A')}"
+    return f"{clock_words(when)} on {when.day} {when.strftime('%B')}"
+
+
+def cap_body(sentences, limit=PUSHOVER_BODY_LIMIT):
+    """Join one sentence per line, keeping WHOLE lines under Pushover's limit.
+
+    Pushover cuts a long body in the middle of a word and says nothing. When
+    lines have to be left out the last line says how many and where they are.
+    """
+    sentences = list(sentences)
+    body = "\n".join(sentences)
+    if len(body) <= limit:
+        return body
+    for keep in range(len(sentences) - 1, 0, -1):
+        left = len(sentences) - keep
+        tail = (f"{number_word(left).capitalize()} more "
+                f"{'is' if left == 1 else 'are'} listed in the Indigo Event Log.")
+        body = "\n".join(sentences[:keep] + [tail])
+        if len(body) <= limit:
+            return body
+    return sentences[0][:limit]
+
+
+def error_reason(protocol, error_state):
+    """A Reason for a device Indigo holds in an error state.
+
+    The strings each plugin writes are known (see the checks below). One this
+    table does not know is shown in quotes rather than dropped, so a fault added
+    to a plugin later reaches the phone instead of vanishing.
+    """
+    raw  = f"errorState={error_state!r}"
+    text = str(error_state).strip().lower()
+    if protocol == "shelly" and text == "unreachable":
+        return Reason(raw, "has stopped answering")
+    if protocol == "shelly" and text == "wrong device":
+        return Reason(raw, "has a different Shelly answering at its address",
+                      "has the wrong device at its address")
+    if protocol == "zwave" and text == "no ack":
+        return Reason(raw, "is not answering the Z-Wave controller")
+    if protocol == "ramses" and text == "valve silent":
+        return Reason(raw, "has a radiator valve that has gone quiet",
+                      "has a silent radiator valve")
+    return Reason(raw, f'is reporting a fault, "{error_state}"', "is reporting a fault")
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.14.2"
+PLUGIN_VERSION = "2.15.0"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -1025,6 +1193,22 @@ class Plugin(indigo.PluginBase):
         # In memory only, like _zwave_probed: a restart re-asks every flagged
         # device, which costs a handful of frames and cannot suppress anything.
         self._z2m_probes: dict[int, dict] = {}
+        # device_id -> when the device was LAST HEARD FROM, stored with the latch
+        # (2.15.0). The latch time is when a threshold tripped, which for a silent
+        # sensor is hours after it actually stopped: the Living Room Left window
+        # sensor last reported at 11:41 on 07-11-2026 and was latched at 12:41 the
+        # next day, so the reminder said "offline since 12:41 08-Nov". Only present
+        # where the protocol has an honest clock; see _last_heard.
+        self.last_heard: dict[int, datetime] = {}
+        # device_id -> the day (ISO) its latest drop was latched WITHOUT a Pushover,
+        # because it had already flapped past the daily limit. Persisted, so a
+        # restart cannot turn "not paged today" into "never paged": on any later
+        # day a muted device that is still offline is reported afresh.
+        self._muted: dict[int, str] = {}
+        # Outages per device today, for the flap damping. In memory only, like
+        # _flap_counts below: a restart can only reset a tally, which pages MORE.
+        self._drop_day: str               = date.today().isoformat()
+        self._drop_counts: dict[int, int] = {}
         self._restore_alerted()
         # Device ids whose alert we could not deliver — so a Pushover outage keeps
         # retrying instead of latching the device as "already alerted" (see _run_scan).
@@ -1105,6 +1289,15 @@ class Plugin(indigo.PluginBase):
         # Daily reminder of devices still offline (2.14.0). Hour clamped to 0-23.
         self.daily_reminder            = as_bool(values.get("dailyReminder", True), True)
         self.daily_reminder_hour       = min(max(_as_int(values.get("dailyReminderHour", 9), 9), 0), 23)
+        # How long a device must have been reported before the reminder repeats it
+        # (2.15.0). A blank or rubbish value falls back to the default; a negative
+        # one is treated as 0, which is "remind about everything".
+        self.reminder_min_age_hours    = max(_as_float(
+            values.get("reminderMinAgeHours", REMINDER_MIN_AGE_HOURS), REMINDER_MIN_AGE_HOURS), 0.0)
+        # Drops a device may have in one day before it is called flapping and its
+        # further drops stop being paged until tomorrow (2.15.0). 0 = no damping.
+        self.flap_limit_per_day        = max(_as_int(
+            values.get("flapLimitPerDay", FLAP_LIMIT_PER_DAY), FLAP_LIMIT_PER_DAY), 0)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -1151,6 +1344,8 @@ class Plugin(indigo.PluginBase):
         now       = datetime.now()
         pending   = []   # [(dev_id, name, reason)] offline and not yet notified
         recovered = []
+        heard: dict[int, datetime | None] = {}   # pending dev_id -> last heard from
+        self._roll_drop_day(now)
 
         disabled_now: dict[int, str] = {}   # watched, not excluded, disabled: id -> name
         for dev in indigo.devices:
@@ -1183,7 +1378,11 @@ class Plugin(indigo.PluginBase):
                 # scan interval — _send_pushover's own WARNING is the heartbeat.
                 if dev.id not in self._undelivered:
                     log(f"[OFFLINE] {dev.name}: {reason}", level="WARNING")
+                    # A new outage, as against a retry of an alert that could not
+                    # be delivered: counted once, for the flap damping.
+                    self._drop_counts[dev.id] = self._drop_counts.get(dev.id, 0) + 1
                 pending.append((dev.id, dev.name, reason))
+                heard[dev.id] = self._last_heard(dev, now)
             else:
                 # A quiet mains Z-Wave node gets poked rather than accused. Silence
                 # cannot separate healthy from dead here (measured 09-09-2026 — the
@@ -1212,13 +1411,41 @@ class Plugin(indigo.PluginBase):
             # Latch ONLY on a delivered alert. Latching inside the loop meant a
             # Pushover outage marked the device "already alerted", so the outage was
             # logged and never notified — the WaterLeakMonitor v1.8 bug class.
-            if self._alert_pushover([(name, reason) for _, name, reason in pending]):
-                for dev_id, _, _ in pending:
-                    self.alerted[dev_id] = now
-                    self._undelivered.discard(dev_id)
-            else:
-                for dev_id, _, _ in pending:
-                    self._undelivered.add(dev_id)
+            #
+            # FLAP DAMPING (2.15.0), for every protocol. A device on its first
+            # drops of the day is paged as before. The drop AFTER the daily limit
+            # is paged once, saying how many times it has gone. Later drops that
+            # day are latched without a Pushover and written to the log, and the
+            # day rolling over reports any of them that is still offline (see
+            # _roll_drop_day), so the damping can delay a page but never lose one.
+            limit = self.flap_limit_per_day
+            page, silent = [], []
+            for dev_id, name, reason in pending:
+                count = self._drop_counts.get(dev_id, 1)
+                if limit > 0 and count > limit + 1:
+                    silent.append((dev_id, name, count))
+                else:
+                    flap = count if (limit > 0 and count == limit + 1) else 0
+                    page.append((dev_id, name, reason, heard.get(dev_id), flap))
+            for dev_id, name, count in silent:
+                self.alerted[dev_id] = now
+                self._muted[dev_id]  = now.date().isoformat()
+                self._undelivered.discard(dev_id)
+                if heard.get(dev_id) is not None:
+                    self.last_heard[dev_id] = heard[dev_id]
+                log(f"[FLAPPING] {name}: offline for the {ordinal_word(count)} time today. "
+                    f"Not sent to Pushover (limit {limit} a day); it is reported "
+                    f"tomorrow if it is still offline then.", level="WARNING")
+            if page:
+                if self._alert_pushover([item[1:] for item in page]):
+                    for dev_id, _, _, last, _ in page:
+                        self.alerted[dev_id] = now
+                        self._undelivered.discard(dev_id)
+                        if last is not None:
+                            self.last_heard[dev_id] = last
+                else:
+                    for dev_id, _, _, _, _ in page:
+                        self._undelivered.add(dev_id)
 
         self._persist_alerted()
         self._maybe_send_daily_reminder(now)
@@ -1226,6 +1453,59 @@ class Plugin(indigo.PluginBase):
         if self.debug:
             log(f"Scan complete — {len(pending)} new offline, {len(recovered)} recovered, "
                 f"{len(self.alerted)} total outstanding, {len(self._undelivered)} undelivered")
+
+    def _roll_drop_day(self, now):
+        """Start a new day's drop tally, and un-mute yesterday's muted devices.
+
+        A device muted on an earlier day and still latched has been offline since
+        a drop nobody was paged about. Its latch is cleared here, before the scan
+        looks at it, so if it is still offline it is reported afresh in this very
+        scan and if it has recovered nothing is said. The day is read from the
+        stored mute, not from memory, so this also holds across a plugin restart.
+        """
+        today = now.date().isoformat()
+        if self._drop_day != today:
+            self._drop_day    = today
+            self._drop_counts = {}
+        for dev_id, day in list(self._muted.items()):
+            if dev_id not in self.alerted:
+                del self._muted[dev_id]
+            elif day != today:
+                del self._muted[dev_id]
+                del self.alerted[dev_id]
+                log(f"Device {self._device_label(dev_id)} was not paged for its last "
+                    f"drop on {day} (flapping); checking it afresh today")
+
+    def _last_heard(self, dev, now=None):
+        """When this device last genuinely spoke, or None where nothing honest says.
+
+        Z2M and ESPHome keep their own lastSeen state. Ecowitt keeps the time of
+        its last reading. Z-Wave's lastSuccessfulComm is only moved by a reply.
+        Shelly and RAMSES give None ON PURPOSE: their plugins write a state when
+        the device goes away, and Indigo refreshes lastSuccessfulComm on any state
+        write, so that clock reads "a moment ago" on a device that has just died
+        (the measurement is in away_clock). A message then says when the device
+        was FOUND offline, which is true, rather than guess when it stopped.
+        Never raises, and never returns a time in the future.
+        """
+        now = now or datetime.now()
+        try:
+            protocol = MONITORED_PLUGINS.get(getattr(dev, "pluginId", ""))
+            states   = getattr(dev, "states", None) or {}
+            if protocol in ("z2m", "esphome"):
+                last = parse_last_seen(states.get("lastSeen"))
+            elif protocol == "ecowitt":
+                age  = ecowitt_feed_age_hours(states, now)
+                last = None if age is None else now - timedelta(hours=age)
+            elif protocol == "zwave":
+                last = dev.lastSuccessfulComm
+            else:
+                last = None
+            if not isinstance(last, datetime) or last > now:
+                return None
+            return last
+        except Exception:
+            return None
 
     def _note_disabled(self, dev):
         """A watched device is disabled: clear its latch and say so once. (2.14.1)
@@ -1472,11 +1752,14 @@ class Plugin(indigo.PluginBase):
         # take the whole health check down.
         last = self._device_clock(dev)
         if last is None:
-            return True, f"{reason} — never communicated, so the away tolerance cannot apply"
+            return True, Reason(
+                f"{reason} — never communicated, so the away tolerance cannot apply",
+                *plain_of(reason))
         away = self._hours_since(last)
         if away <= tol:
             return False, ""
-        return True, f"{reason}; away {away:.1f}h (tolerance {tol:g}h)"
+        return True, Reason(f"{reason}; away {away:.1f}h (tolerance {tol:g}h)",
+                            *plain_of(reason))
 
     def _check_z2m(self, dev):
         # Check silence first: availability can sit stale at "online" after a
@@ -1491,8 +1774,10 @@ class Plugin(indigo.PluginBase):
             hours = self._hours_since(last)
             if thresh is not None and hours > thresh:
                 note = " — quiet device" if quiet else ""
-                return self._z2m_probe_verdict(
-                    dev, f"not seen for {hours:.1f}h (threshold {thresh:g}h{note})")
+                return self._z2m_probe_verdict(dev, Reason(
+                    f"not seen for {hours:.1f}h (threshold {thresh:g}h{note})",
+                    f"has not been heard from for {span_words(hours)}",
+                    "has gone quiet"))
         # A quiet device is exempt from SILENCE, never from a fault the stack has
         # actively reported. z2m marking it offline is exactly that.
         avail = dev.states.get("availability", "online")
@@ -1549,7 +1834,10 @@ class Plugin(indigo.PluginBase):
         self._z2m_probes[dev.id] = {"seen": seen_now, "strikes": strikes}
         self._z2m_probe(dev)
         if strikes >= self.Z2M_PROBE_STRIKES:
-            return True, f"{reason}; ignored {strikes} direct reads"
+            plain, title = plain_of(reason)
+            return True, Reason(f"{reason}; ignored {strikes} direct reads",
+                                f"{plain}, and it did not answer when asked directly",
+                                title)
         if self.debug:
             log(f"{dev.name}: z2m says offline — asked it directly "
                 f"(read {strikes} of {self.Z2M_PROBE_STRIKES}), holding off")
@@ -1636,10 +1924,12 @@ class Plugin(indigo.PluginBase):
         away_clock and _apply_offline_tolerance both make.
         """
         if self.z2m_offline_grace_min <= 0:
-            return True, "availability=offline"
+            return True, Reason("availability=offline",
+                                "is marked offline by the Zigbee network")
         if last_seen is None:
-            return True, ("availability=offline — no lastSeen to measure a grace "
-                          "period from")
+            return True, Reason(
+                "availability=offline — no lastSeen to measure a grace period from",
+                "is marked offline by the Zigbee network and has never been heard from")
         quiet_min = self._hours_since(last_seen) * 60.0
         if quiet_min < self.z2m_offline_grace_min:
             if self.debug:
@@ -1648,8 +1938,11 @@ class Plugin(indigo.PluginBase):
                     f"{self.z2m_offline_grace_min:g} min grace, holding off")
             self._note_flap(dev)
             return False, ""
-        return True, (f"availability=offline, and not seen for {quiet_min:.0f} min "
-                      f"(grace {self.z2m_offline_grace_min:g} min)")
+        return True, Reason(
+            f"availability=offline, and not seen for {quiet_min:.0f} min "
+            f"(grace {self.z2m_offline_grace_min:g} min)",
+            f"is marked offline by the Zigbee network and has not been heard from "
+            f"for {span_words(quiet_min / 60.0)}")
 
     # A device the grace holds back this often in one day is not healthy; it is
     # flapping, which is a different fault and worth saying once.
@@ -1751,7 +2044,10 @@ class Plugin(indigo.PluginBase):
         # either way and the caller happens to ignore it, but a string reading
         # "connected=False" sitting on a connected device is the kind of thing
         # that gets quoted in a log line later and believed.
-        return (True, "connected=False") if not online else (False, "")
+        if not online:
+            return True, Reason("connected=False", "has lost its connection",
+                                "has lost its connection")
+        return False, ""
 
     def _check_ramses(self, dev):
         """An Evohome zone is judged on the error state RAMSES_ESP sets itself.
@@ -1785,7 +2081,7 @@ class Plugin(indigo.PluginBase):
         Log_Error_Watch but deliberately never pushed.
         """
         if dev.errorState:
-            return True, f"errorState={dev.errorState!r}"
+            return True, error_reason("ramses", dev.errorState)
         return False, ""
 
     def _check_shelly(self, dev):
@@ -1803,11 +2099,11 @@ class Plugin(indigo.PluginBase):
         both and bring back the false alarms they exist to stop.
         """
         if dev.errorState:
-            return True, f"errorState={dev.errorState!r}"
+            return True, error_reason("shelly", dev.errorState)
         # deviceOnline may be bool or string depending on device type
         raw    = dev.states.get("deviceOnline", True)
         online = raw if isinstance(raw, bool) else str(raw).lower() not in ("false", "0", "no")
-        return not online, "deviceOnline=False"
+        return not online, Reason("deviceOnline=False", "has stopped answering")
 
     def _check_zwave(self, dev):
         # Indigo's own errorState is the reliable signal — it is set when the
@@ -1818,7 +2114,7 @@ class Plugin(indigo.PluginBase):
         # stale with errorState clear (En Suite floor heating, Loft repeater, everyday
         # lights), every one perfectly healthy.
         if dev.errorState:
-            return True, f"errorState={dev.errorState!r}"
+            return True, error_reason("zwave", dev.errorState)
         # Battery Z-Wave devices DO report on a wake cadence, so prolonged silence is
         # meaningful (flat battery / fallen off the mesh).
         if dev.batteryLevel is not None:
@@ -1830,13 +2126,16 @@ class Plugin(indigo.PluginBase):
                 # a node that has never once reported is a genuine pairing fault.
                 if thresh is None:
                     return False, ""
-                return True, "battery device never communicated (lastSuccessfulComm=None)"
+                return True, Reason(
+                    "battery device never communicated (lastSuccessfulComm=None)",
+                    "has never reported since it was added", "has never reported")
             if thresh is None:
                 return False, ""
             hours = self._hours_since(last)
             note  = " — quiet device" if quiet else ""
-            return hours > thresh, \
-                f"battery device: last comm {hours:.1f}h ago (threshold {thresh:g}h{note})"
+            return hours > thresh, Reason(
+                f"battery device: last comm {hours:.1f}h ago (threshold {thresh:g}h{note})",
+                f"has not reported for {span_words(hours)}", "has gone quiet")
         # Mains device with no error — healthy (stale comm is normal for un-polled nodes).
         return False, ""
 
@@ -1871,25 +2170,34 @@ class Plugin(indigo.PluginBase):
             if thresh is None:
                 return False, ""
             said = ", and Ecowitt marks it offline" if verdict else ""
-            return age > thresh, \
-                f"no reading for {age:.1f}h (threshold {thresh:g}h{note}){said}"
+            return age > thresh, Reason(
+                f"no reading for {age:.1f}h (threshold {thresh:g}h{note}){said}",
+                f"has sent no reading for {span_words(age)}",
+                "has stopped sending readings")
         if verdict is True:
             if thresh is None:
                 return False, ""
-            return True, "Ecowitt marks it offline and it has no reading on record"
+            return True, Reason(
+                "Ecowitt marks it offline and it has no reading on record",
+                "is marked offline by the weather station plugin and has never "
+                "sent a reading", "has never sent a reading")
 
         # No feed states at all. NB this judges lastChanged, not
         # lastSuccessfulComm — so it trips on an UNCHANGED VALUE rather than on
         # silence.
         last = dev.lastChanged
         if last is None:
-            return True, "lastChanged=None"
+            return True, Reason("lastChanged=None", "has never reported",
+                                "has never reported")
         thresh, quiet = self._threshold_for(dev, self.ecowitt_hours)
         if thresh is None:
             return False, ""
         hours = self._hours_since(last)
         note  = " — quiet device" if quiet else ""
-        return hours > thresh, f"lastChanged {hours:.1f}h ago (threshold {thresh:g}h{note})"
+        return hours > thresh, Reason(
+            f"lastChanged {hours:.1f}h ago (threshold {thresh:g}h{note})",
+            f"has not changed its reading for {span_words(hours)}",
+            "has stopped sending readings")
 
     # ------------------------------------------------------------------
     # Exclusion file (device-level scan)
@@ -2088,20 +2396,33 @@ class Plugin(indigo.PluginBase):
         if self.pluginPrefs.get("last_reminder_day", "") == today:
             return
         lines = []
+        names = []
         for dev_id, since in sorted(self.alerted.items(), key=lambda kv: kv[1]):
-            hours = self._hours_since(since, now)
-            if hours < REMINDER_MIN_AGE_HOURS:
+            if self._hours_since(since, now) < self.reminder_min_age_hours:
                 continue
             try:
                 name = indigo.devices[dev_id].name
             except Exception:
                 continue            # deleted; the scan clears its latch
-            when = since.strftime("%H:%M %d-%b")
-            lines.append(f"- {name} (offline since {when}, {hours:.0f}h)")
+            # Say when it was LAST HEARD FROM where that is known. The latch time
+            # is only when a threshold tripped, which for a silent sensor is hours
+            # (25, for the window sensor of 07-11-2026) after it really stopped.
+            last = self.last_heard.get(dev_id)
+            if last is not None and last <= since:
+                lines.append(f"{name} has not been heard from since {when_words(last, now)}, "
+                             f"{span_words(self._hours_since(last, now))} ago.")
+            else:
+                lines.append(f"{name} was found offline at {when_words(since, now)}, "
+                             f"{span_words(self._hours_since(since, now))} ago, and "
+                             f"has not come back.")
+            names.append(name)
         if not lines:
             return
-        title = f"Device Health: {len(lines)} still offline"
-        if self._send_pushover(title, "\n".join(lines), priority="0"):
+        if len(lines) == 1:
+            title = f"{names[0]} is still offline"
+        else:
+            title = f"{number_word(len(lines)).capitalize()} devices are still offline"
+        if self._send_pushover(title, cap_body(lines), priority="0"):
             self.pluginPrefs["last_reminder_day"] = today
             try:
                 indigo.server.savePluginPrefs()
@@ -2113,14 +2434,49 @@ class Plugin(indigo.PluginBase):
             log(f"Daily reminder NOT DELIVERED — {len(lines)} device(s) still offline, "
                 f"retrying next scan", level="ERROR")
 
+    @staticmethod
+    def _alert_text(offline_list, now=None):
+        """(title, body) for a new-offline alert, in plain sentences.
+
+        Each item is (name, reason) or (name, reason, last_heard, flap_count).
+        The raw reason never appears here; it is in the Event Log's [OFFLINE]
+        line. With one device the title names it and says what is wrong, so the
+        message can be read at a glance. flap_count above 0 marks the one drop
+        that is reported as flapping.
+        """
+        now       = now or datetime.now()
+        sentences = []
+        titles    = []
+        for item in offline_list:
+            name, reason = item[0], item[1]
+            last = item[2] if len(item) > 2 else None
+            flap = item[3] if len(item) > 3 else 0
+            plain, short = plain_of(reason)
+            if flap:
+                text = (f"{name} {plain}, for the {ordinal_word(flap)} time today. It came "
+                        f"back each time before, so no more alerts about it will be "
+                        f"sent until tomorrow.")
+                titles.append(f"{name} keeps dropping out")
+            else:
+                text = f"{name} {plain}."
+                titles.append(f"{name} {short}")
+            # Not after a reason that already gives the length of the silence.
+            if last is not None and "never" not in plain and " for " not in plain:
+                text += f" It was last heard from at {when_words(last, now)}."
+            sentences.append(text)
+        if len(sentences) == 1:
+            title = titles[0]
+        else:
+            title = f"{number_word(len(sentences)).capitalize()} devices are offline"
+        return title, cap_body(sentences)
+
     def _alert_pushover(self, offline_list):
         """Send one consolidated alert. Returns True only if it was DELIVERED.
 
         The caller latches on that bool, so this must never report success it
         did not achieve.
         """
-        body  = "\n".join(f"- {name} ({reason})" for name, reason in offline_list)
-        title = f"Device Health: {len(offline_list)} offline"
+        title, body = self._alert_text(offline_list)
         if self._send_pushover(title, body, priority="0"):
             log(f"Pushover alert sent: {len(offline_list)} device(s) offline")
             return True
@@ -2530,6 +2886,15 @@ class Plugin(indigo.PluginBase):
         try:
             data = {str(k): v.isoformat() for k, v in self.alerted.items()}
             self.pluginPrefs["alerted_json"] = json.dumps(data)
+            # The two companions of the latch are pruned to it HERE, the one place
+            # every path that clears a latch already passes through, so neither
+            # can outlive the latch it describes.
+            self.last_heard = {k: v for k, v in self.last_heard.items() if k in self.alerted}
+            self._muted     = {k: v for k, v in self._muted.items() if k in self.alerted}
+            self.pluginPrefs["last_heard_json"] = json.dumps(
+                {str(k): v.isoformat() for k, v in self.last_heard.items()})
+            self.pluginPrefs["muted_json"] = json.dumps(
+                {str(k): v for k, v in self._muted.items()})
             indigo.server.savePluginPrefs()
         except Exception as e:
             log(f"Failed to persist alert state: {e}", level="ERROR")
@@ -2544,6 +2909,22 @@ class Plugin(indigo.PluginBase):
         except Exception as e:
             log(f"Could not restore alert state: {e}", level="WARNING")
             self.alerted = {}
+        # Each on its own: an unreadable companion must not cost the latches, and
+        # losing one only makes a message vaguer or a page earlier, never lost.
+        try:
+            data = json.loads(self.pluginPrefs.get("last_heard_json", "{}") or "{}")
+            self.last_heard = {int(k): datetime.fromisoformat(v) for k, v in data.items()
+                               if int(k) in self.alerted}
+        except Exception as e:
+            log(f"Could not restore the last-heard times: {e}", level="WARNING")
+            self.last_heard = {}
+        try:
+            data = json.loads(self.pluginPrefs.get("muted_json", "{}") or "{}")
+            self._muted = {int(k): str(v) for k, v in data.items()
+                           if int(k) in self.alerted}
+        except Exception as e:
+            log(f"Could not restore the flap mutes: {e}", level="WARNING")
+            self._muted = {}
 
     # ------------------------------------------------------------------
     # Helpers
