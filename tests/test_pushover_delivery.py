@@ -135,3 +135,39 @@ def test_the_scan_sends_the_reminder(plugin_mod, plugin, pushover, monkeypatch):
     plugin.daily_reminder_hour = 0
     plugin._run_scan()
     assert len(reminders(pushover)) == 1
+
+
+# --------------------------------------------------------------------------
+# 2.15.1: the WARNING says why, in plain words
+# --------------------------------------------------------------------------
+
+def test_indigos_unconvertible_exception_is_explained(plugin_mod):
+    words = plugin_mod.pushover_error_words(Exception("unable to convert python exception"))
+    assert words == "the Pushover plugin could not send it, most often because the internet is down"
+
+
+def test_the_two_runtime_errors_read_as_plain_words(plugin_mod):
+    off = plugin_mod.pushover_error_words(RuntimeError("Pushover plugin not enabled"))
+    stopped = plugin_mod.pushover_error_words(RuntimeError("Pushover plugin enabled but not running"))
+    assert off == "the Pushover plugin is switched off in Indigo"
+    assert stopped == "the Pushover plugin is enabled but has stopped running"
+
+
+def test_an_unknown_exception_keeps_its_own_text(plugin_mod):
+    assert plugin_mod.pushover_error_words(ValueError("odd thing")) == "odd thing"
+    assert plugin_mod.pushover_error_words(KeyError()) == "KeyError"
+
+
+def test_the_warning_line_is_a_sentence_with_title_and_body(plugin_mod, plugin, pushover):
+    logged = []
+    orig = plugin_mod.log
+    plugin_mod.log = lambda m, level="INFO": logged.append((m, level))
+    try:
+        pushover.running = False
+        assert plugin._send_pushover("The title", "The body") is False
+    finally:
+        plugin_mod.log = orig
+    line = [m for m, lv in logged if lv == "WARNING"][0]
+    assert "the Pushover plugin is enabled but has stopped running" in line
+    assert "The title" in line and "The body" in line
+    assert "(" not in line

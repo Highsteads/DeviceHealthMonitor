@@ -2,7 +2,7 @@
 
 **Tells your phone when a device in Indigo stops answering, and restarts a plugin that has stopped working.**
 
-**Version:** 2.15.0 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
+**Version:** 2.15.1 | **Author:** CliveS & Claude | **Needs:** Indigo 2022.1 or later and the Pushover plugin
 
 **[Read the full guide](https://highsteads.github.io/DeviceHealthMonitor/)** — setting up, what everything means, and what to do when something goes wrong.
 
@@ -48,6 +48,8 @@ The plugin watchdog works with almost any plugin that runs devices.
 The [full guide](https://highsteads.github.io/DeviceHealthMonitor/) goes through each step, explains every setting, and covers what to do if something does not work.
 
 ## What's new
+
+**v2.15.1** — A Pushover message that could not be sent is explained in plain words in the Event Log, such as "the Pushover plugin could not send it, most often because the internet is down". Nothing else changes.
 
 **v2.15.0** — Messages are in plain English with the device named in the title, such as "Twigs Plug has stopped answering". A device that keeps dropping out sends one message saying so once it has gone more than three times in a week, then stays quiet until it has settled for two days, and a drop that lasts three hours is always sent. The daily reminder says when each device was last heard from, and waits until a device has been offline for 12 hours.
 

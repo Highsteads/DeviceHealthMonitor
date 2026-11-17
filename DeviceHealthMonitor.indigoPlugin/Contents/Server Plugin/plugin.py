@@ -4,9 +4,14 @@
 # Description: Device Health Monitor — scans all physical devices for offline/stale
 #              status and sends consolidated Pushover alerts, AND auto-discovers
 #              comms plugins, restarting any that crash or wedge.
-# Author:      CliveS & Claude Fable 5.2
-# Date:        10-11-2026
-# Version:     2.15.0
+# Author:      CliveS & Claude Sonnet 5.5
+# Date:        17-11-2026
+# Version:     2.15.1
+#
+# v2.15.1 (17-11-2026): the Pushover failure WARNING is a sentence. With the internet
+# down Indigo raised "unable to convert python exception", which says nothing; it now
+# reads "the Pushover plugin could not send it, most often because the internet is
+# down" (pushover_error_words). Retry logic unchanged.
 #
 # v2.15.0 (10-11-2026): THE PHONE GETS PLAIN ENGLISH, AND A FLAPPING DEVICE STOPS
 # PAGING. From the 10-11-2026 audit of every message the server sends: 80 Device
@@ -448,6 +453,22 @@ _ORDINAL_WORDS = ("", "first", "second", "third", "fourth", "fifth", "sixth",
                   "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth")
 
 
+def pushover_error_words(exc):
+    """A Pushover send failure as plain words, for the WARNING line. (2.15.1)
+
+    Indigo raises "unable to convert python exception" in the caller when the Pushover
+    plugin's own action raised, which in practice means it could not reach the internet.
+    """
+    text = str(exc).strip()
+    if "unable to convert python exception" in text:
+        return "the Pushover plugin could not send it, most often because the internet is down"
+    if text == "Pushover plugin not enabled":
+        return "the Pushover plugin is switched off in Indigo"
+    if text == "Pushover plugin enabled but not running":
+        return "the Pushover plugin is enabled but has stopped running"
+    return text or exc.__class__.__name__
+
+
 def number_word(n):
     """Small whole numbers as a person says them: 'four', not '4'."""
     n = int(n)
@@ -552,7 +573,7 @@ def error_reason(protocol, error_state):
 
 PLUGIN_ID      = "com.clives.indigoplugin.device-health-monitor"
 PLUGIN_NAME    = "Device Health Monitor"
-PLUGIN_VERSION = "2.15.0"
+PLUGIN_VERSION = "2.15.1"
 
 EXCLUSIONS_FILE = os.path.expanduser(
     "~/Documents/Indigo/DeviceHealthMonitor/exclusions.json"
@@ -2452,7 +2473,7 @@ class Plugin(indigo.PluginBase):
             })
             return True
         except Exception as e:
-            log(f"Pushover failed ({e}) — {title}: {body}", level="WARNING")
+            log(f"Pushover message not sent: {pushover_error_words(e)}. Title: {title}. Message: {body}", level="WARNING")
             return False
 
     def _maybe_send_daily_reminder(self, now):

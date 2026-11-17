@@ -5,6 +5,10 @@ nav_order: 10
 
 # Version history
 
+## 2.15.1 — 17 November 2026
+
+- **A Pushover message that could not be sent is explained in the Event Log.** With the internet down the warning read "unable to convert python exception", which says nothing. It now says "the Pushover plugin could not send it, most often because the internet is down", followed by the title and text of the message. The message is still sent again at the next check, as before.
+
 ## 2.15.0 — 10 November 2026
 
 - **Messages are in plain English, and one device is named in the title.** A message used to be headed **Device Health: 1 offline** with the plugin's own shorthand underneath. It now reads, for example, **Twigs Plug has stopped answering**, and the message says what is wrong in a sentence. The shorthand is still in the Event Log's **[OFFLINE]** line.
